@@ -1,0 +1,12 @@
+debug
+release
+.qmake.stash
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.h.cpp
+*.tlog
+*.ilk
+*.log
+*.pdb
+.vs
