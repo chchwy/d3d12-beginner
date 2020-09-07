@@ -47,6 +47,44 @@ struct DX12
 
 DX12 dx;
 
+void FlushCommandQueue()
+{
+    dx.mCurrentFence += 1;
+
+    // Add an instruction to the command queue to set a new fence point.  Because we
+    // are on the GPU timeline, the new fence point won't be set until the GPU finishes
+    // processing all the commands prior to this Signal().
+    HR(dx.mCommandQueue->Signal(dx.mFence.Get(), dx.mCurrentFence));
+
+    if (dx.mFence->GetCompletedValue() < dx.mCurrentFence)
+    {
+        HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
+
+        dx.mFence->SetEventOnCompletion(dx.mCurrentFence, eventHandle);
+
+        WaitForSingleObject(eventHandle, INFINITE);
+        CloseHandle(eventHandle);
+    }
+}
+
+ID3D12Resource* CurrentBackBuffer()
+{
+    return dx.mSwapChainBuffers[dx.mCurrBackBuffer].Get();
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView()
+{
+    return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+        dx.mRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+        dx.mCurrBackBuffer,
+        dx.mRtvDescSize);
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()
+{
+    return dx.mDsvHeap->GetCPUDescriptorHandleForHeapStart();
+}
+
 void InitD3D(HWND hwnd)
 {
 #ifdef ENABLE_DEBUG_LAYER
@@ -191,12 +229,48 @@ void InitD3D(HWND hwnd)
 
     ID3D12CommandList* cmdLists[] = { dx.mCommandList.Get() };
     dx.mCommandQueue->ExecuteCommandLists(1, cmdLists);
-
 }
 
 void Render()
 {
+    // We can only reset when the associated command lists have finished execution on the GPU.
+    HR(dx.mCommandAllocator->Reset());
 
+    // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
+    // Reusing the command list reuses memory.
+    HR(dx.mCommandList->Reset(dx.mCommandAllocator.Get(), nullptr));
+
+    dx.mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+                                                                              D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+    // This needs to be reset whenever the command list is reset.
+    dx.mCommandList->RSSetViewports(1, &dx.mViewport);
+    dx.mCommandList->RSSetScissorRects(1, &dx.mScissorRect);
+
+    // Clear back buffer & depth stencil buffer
+    FLOAT red[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
+    dx.mCommandList->ClearRenderTargetView(CurrentBackBufferView(), red, 0, nullptr);
+    dx.mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+
+    // Specify the buffers we are going to render to.
+    dx.mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+
+    // Indicate a state transition on the resource usage.
+    dx.mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+                                                                           D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+
+    HR(dx.mCommandList->Close()); // Done recording commands.
+
+    // Execute command list
+    ID3D12CommandList* cmdsLists[] = { dx.mCommandList.Get() };
+    dx.mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+
+    HR(dx.mSwapChain->Present(0, 0));
+    dx.mCurrBackBuffer = (dx.mCurrBackBuffer + 1) % NUM_BACK_BUFFER;
+
+    // Wait until frame commands are complete.
+    // This waiting is inefficient and is done for simplicity.
+    // Later we will show how to organize our rendering code so we do not have to wait per frame.
+    FlushCommandQueue();
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
