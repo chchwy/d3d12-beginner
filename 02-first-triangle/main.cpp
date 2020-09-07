@@ -98,6 +98,7 @@ void InitD3D(HWND hwnd)
     }
 #endif
 
+    // Create DXGI Factory, Device and Fence
     IDXGIFactory4* dxgiFactory = nullptr;
     HR(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
 
@@ -111,17 +112,15 @@ void InitD3D(HWND hwnd)
     dx.device = device;
     dx.fence = fence;
 
-    dx.rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    dx.dsvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
     dx.cbvSrvUavDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
+    // MSAA
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels;
     msaaQualityLevels.Format = BACK_BUFFER_FORMAT;
     msaaQualityLevels.SampleCount = 4;
     msaaQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
     msaaQualityLevels.NumQualityLevels = 0;
     dx.device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &msaaQualityLevels, sizeof(msaaQualityLevels));
-
     dx.msaaQuality = msaaQualityLevels.NumQualityLevels;
 
     // Create CommandList
@@ -169,13 +168,15 @@ void InitD3D(HWND hwnd)
 
     dx.swapChain = swapChain;
 
-    // Create Heap
+    // Create Descriptor Heaps
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc;
     rtvDesc.NumDescriptors = NUM_BACK_BUFFER;
     rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     rtvDesc.NodeMask = 0;
     HR(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&dx.rtvHeap)));
+
+    dx.rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
     D3D12_DESCRIPTOR_HEAP_DESC dsvDesc;
     dsvDesc.NumDescriptors = 1;
@@ -184,7 +185,9 @@ void InitD3D(HWND hwnd)
     dsvDesc.NodeMask = 0;
     HR(device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&dx.dsvHeap)));
 
-    // Back buffer Render Target View
+    dx.dsvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+    // Create RTV for each back buffer
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHeapHandle(dx.rtvHeap->GetCPUDescriptorHandleForHeapStart());
     for (int i = 0; i < NUM_BACK_BUFFER; ++i)
     {
@@ -215,7 +218,6 @@ void InitD3D(HWND hwnd)
     c.DepthStencil.Depth = 1.0f;
     c.DepthStencil.Stencil = 0;
 
-
     ID3D12Resource* depthStencilBuffer = nullptr;
     CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_DEFAULT);
     HR(dx.device->CreateCommittedResource(&heapProp, D3D12_HEAP_FLAG_NONE,
@@ -236,6 +238,10 @@ void InitD3D(HWND hwnd)
     dx.commandQueue->ExecuteCommandLists(1, cmdLists);
 }
 
+void InitPipeline()
+{
+}
+
 void Render()
 {
     // We can only reset when the associated command lists have finished execution on the GPU.
@@ -245,8 +251,7 @@ void Render()
     // Reusing the command list reuses memory.
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-                                                                              D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
     // This needs to be reset whenever the command list is reset.
     dx.commandList->RSSetViewports(1, &dx.viewport);
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
@@ -260,8 +265,7 @@ void Render()
     dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
     // Indicate a state transition on the resource usage.
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-                                                                           D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 
     HR(dx.commandList->Close()); // Done recording commands.
 
@@ -342,6 +346,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     }
 
     InitD3D(hwnd);
+    InitPipeline();
 
     bool isRunning = true;
     while (isRunning)
