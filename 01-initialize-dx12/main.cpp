@@ -40,27 +40,26 @@ struct DX12
     UINT rtvDescSize = 0;
     UINT dsvDescSize = 0;
     UINT cbvSrvUavDescSize = 0;
-
-    UINT currentFence = 0;
-    UINT currBackBuffer = 0;
 };
 
 DX12 dx;
+UINT currentFence = 0;
+UINT currBackBuffer = 0;
 
 void FlushCommandQueue()
 {
-    dx.currentFence += 1;
+    currentFence += 1;
 
     // Add an instruction to the command queue to set a new fence point.  Because we
     // are on the GPU timeline, the new fence point won't be set until the GPU finishes
     // processing all the commands prior to this Signal().
-    HR(dx.commandQueue->Signal(dx.fence.Get(), dx.currentFence));
+    HR(dx.commandQueue->Signal(dx.fence.Get(), currentFence));
 
-    if (dx.fence->GetCompletedValue() < dx.currentFence)
+    if (dx.fence->GetCompletedValue() < currentFence)
     {
         HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
 
-        dx.fence->SetEventOnCompletion(dx.currentFence, eventHandle);
+        dx.fence->SetEventOnCompletion(currentFence, eventHandle);
 
         WaitForSingleObject(eventHandle, INFINITE);
         CloseHandle(eventHandle);
@@ -69,14 +68,14 @@ void FlushCommandQueue()
 
 ID3D12Resource* CurrentBackBuffer()
 {
-    return dx.swapChainBuffers[dx.currBackBuffer].Get();
+    return dx.swapChainBuffers[currBackBuffer].Get();
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView()
 {
     return CD3DX12_CPU_DESCRIPTOR_HANDLE(
         dx.rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-        dx.currBackBuffer,
+        currBackBuffer,
         dx.rtvDescSize);
 }
 
@@ -189,7 +188,7 @@ void InitD3D(HWND hwnd)
         rtvHeapHandle.Offset(1, dx.rtvDescSize);
     }
 
-    dx.currBackBuffer = 0;
+    currBackBuffer = 0;
 
     // Depth Stencil Buffer
     D3D12_RESOURCE_DESC d;
@@ -265,7 +264,7 @@ void Render()
     dx.commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
     HR(dx.swapChain->Present(0, 0));
-    dx.currBackBuffer = (dx.currBackBuffer + 1) % NUM_BACK_BUFFER;
+    currBackBuffer = (currBackBuffer + 1) % NUM_BACK_BUFFER;
 
     // Wait until frame commands are complete.
     // This waiting is inefficient and is done for simplicity.
