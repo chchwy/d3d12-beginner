@@ -10,3 +10,4 @@ release
 *.log
 *.pdb
 .vs
+*.sln
