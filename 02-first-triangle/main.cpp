@@ -6,6 +6,8 @@
 #pragma comment(lib, "dxgi.lib")
 
 using Microsoft::WRL::ComPtr;
+using DirectX::XMFLOAT3;
+using DirectX::XMFLOAT4;
 
 const static UINT CLIENT_WIDTH = 1024;
 const static UINT CLIENT_HEIGHT = 768;
@@ -14,10 +16,16 @@ const static UINT NUM_BACK_BUFFER = 2;
 
 #define ENABLE_DEBUG_LAYER true
 
+struct Vertex
+{
+    XMFLOAT3 position;
+    XMFLOAT4 color;
+};
+
 struct DX12
 {
-    ComPtr<IDXGIFactory> dxgiFactory;
-    ComPtr<ID3D12Device> device;
+    ComPtr<IDXGIFactory4> dxgiFactory;
+    ComPtr<ID3D12Device5> device;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12CommandQueue> commandQueue;
     ComPtr<ID3D12GraphicsCommandList> commandList;
@@ -45,7 +53,14 @@ struct DX12
     UINT cbvSrvUavDescSize = 0;
 };
 
+struct Resource
+{
+    ComPtr<ID3D12Resource> vertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
+};
+
 DX12 dx;
+Resource rsc;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
 
@@ -89,6 +104,9 @@ D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()
 
 void InitD3D(HWND hwnd)
 {
+    dx.width = CLIENT_WIDTH;
+    dx.height = CLIENT_HEIGHT;
+
     UINT dxgiFactoryFlags = 0;
 
 #ifdef ENABLE_DEBUG_LAYER
@@ -105,7 +123,7 @@ void InitD3D(HWND hwnd)
     IDXGIFactory4* dxgiFactory = nullptr;
     HR(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
 
-    ID3D12Device* device = nullptr;
+    ID3D12Device5* device = nullptr;
     HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
 
     ID3D12Fence* fence = nullptr;
@@ -126,26 +144,18 @@ void InitD3D(HWND hwnd)
     dx.device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &msaaQualityLevels, sizeof(msaaQualityLevels));
     dx.msaaQuality = msaaQualityLevels.NumQualityLevels;
 
-    // Create CommandList
+    // Create CommandQueue
     ID3D12CommandQueue* commandQueue;
     ID3D12CommandAllocator* commandAllocator;
-    ID3D12GraphicsCommandList* commandList;
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     HR(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
     HR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator)));
-    HR(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator, nullptr, IID_PPV_ARGS(&commandList)));
 
     dx.commandQueue = commandQueue;
-    dx.commandList = commandList;
     dx.commandAllocator = commandAllocator;
-
-    // Start off in a closed state.
-    // This is because the first time we refer to the command list we will Reset it
-    // and it needs to be closed before calling Reset
-    commandList->Close();
 
     // Create SwapChain
     DXGI_SWAP_CHAIN_DESC sd = {};
@@ -223,22 +233,26 @@ void InitD3D(HWND hwnd)
 
     ID3D12Resource* depthStencilBuffer = nullptr;
     CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_DEFAULT);
-    HR(dx.device->CreateCommittedResource(&heapProp, D3D12_HEAP_FLAG_NONE,
-                                        &d, D3D12_RESOURCE_STATE_COMMON, &c,
-                                        IID_PPV_ARGS(&depthStencilBuffer)));
+    HR(dx.device->CreateCommittedResource(&heapProp,
+                                          D3D12_HEAP_FLAG_NONE,
+                                          &d,
+                                          D3D12_RESOURCE_STATE_COMMON,
+                                          &c,
+                                          IID_PPV_ARGS(&depthStencilBuffer)));
 
     dx.depthStencilBuffer = depthStencilBuffer;
 
     D3D12_CPU_DESCRIPTOR_HANDLE handle = dx.dsvHeap->GetCPUDescriptorHandleForHeapStart();
     dx.device->CreateDepthStencilView(dx.depthStencilBuffer.Get(), nullptr, handle); // nullptr only works when the buffer is not typeless
 
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    dx.commandList->ResourceBarrier(1, &barrier);
+    dx.viewport.TopLeftX = 0;
+    dx.viewport.TopLeftY = 0;
+    dx.viewport.Width = FLOAT(dx.width);
+    dx.viewport.Height = FLOAT(dx.height);
+    dx.viewport.MinDepth = 0.0f;
+    dx.viewport.MaxDepth = 1.0f;
 
-    dx.commandList->Close();
-
-    ID3D12CommandList* cmdLists[] = { dx.commandList.Get() };
-    dx.commandQueue->ExecuteCommandLists(1, cmdLists);
+    dx.scissorRect = { 0, 0, dx.width, dx.height };
 }
 
 void InitPipeline()
@@ -285,29 +299,101 @@ void InitPipeline()
         psoDesc.SampleDesc.Count = 1;
         HR(dx.device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&dx.pipelineState)));
     }
+
+    // Create the command list
+    ID3D12GraphicsCommandList* commandList;
+    HR(dx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dx.commandAllocator.Get(), dx.pipelineState.Get(), IID_PPV_ARGS(&commandList)));
+    dx.commandList = commandList;
+
+    // Start off in a closed state.
+    // This is because the first time we refer to the command list we will Reset it
+    // and it needs to be closed before calling Reset
+    commandList->Close();
+
+    // Create the vertex buffer.
+    {
+        // Define the geometry for a triangle.
+        Vertex triangleVertices[] =
+        {
+            { { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
+            { { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
+            { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+        };
+
+        const UINT vertexBufferSize = sizeof(triangleVertices);
+
+        // Note: using upload heaps to transfer static data like vertex buffers is not recommended.
+        // Every time the GPU needs it, the upload heap will be marshalled over.
+        // Please read up on Default Heap usage.
+        // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
+        CD3DX12_HEAP_PROPERTIES healProperties(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
+
+        HR(dx.device->CreateCommittedResource(
+            &healProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, // init state
+            nullptr, // init value
+            IID_PPV_ARGS(&rsc.vertexBuffer)));
+
+        // Copy the triangle data to the vertex buffer.
+        UINT8* data = 0;
+        CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
+        HR(rsc.vertexBuffer->Map(0, &readRange, (void**)&data));
+        {
+            memcpy(data, triangleVertices, vertexBufferSize);
+        }
+        rsc.vertexBuffer->Unmap(0, nullptr);
+
+        // Initialize the vertex buffer view.
+        rsc.vertexBufferView.BufferLocation = rsc.vertexBuffer->GetGPUVirtualAddress();
+        rsc.vertexBufferView.StrideInBytes = sizeof(Vertex);
+        rsc.vertexBufferView.SizeInBytes = vertexBufferSize;
+    }
+
+    // Resource barrier for depth stencil buffer
+
+    commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get());
+
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    dx.commandList->ResourceBarrier(1, &barrier);
+    dx.commandList->Close(); // done recording
+
+    ID3D12CommandList* cmdLists[] = { dx.commandList.Get() };
+    dx.commandQueue->ExecuteCommandLists(1, cmdLists);
+
+    FlushCommandQueue();
 }
 
-void Render()
+void Draw()
 {
     // We can only reset when the associated command lists have finished execution on the GPU.
     HR(dx.commandAllocator->Reset());
 
     // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
     // Reusing the command list reuses memory.
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
 
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
     // This needs to be reset whenever the command list is reset.
+    dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
     dx.commandList->RSSetViewports(1, &dx.viewport);
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
+
+    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
     // Clear back buffer & depth stencil buffer
     FLOAT red[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
     dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), red, 0, nullptr);
-    dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+    //dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
     // Specify the buffers we are going to render to.
     dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+
+    // Draw the triangle
+    dx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    dx.commandList->IASetVertexBuffers(0, 1, &rsc.vertexBufferView);
+    dx.commandList->DrawInstanced(3, 1, 0, 0);
 
     // Indicate a state transition on the resource usage.
     dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
@@ -369,14 +455,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             return GetLastError();
         }
 
-        RECT initialRect = { 0, 0, 1024, 768 };
+        RECT initialRect = { 0, 0, CLIENT_WIDTH, CLIENT_HEIGHT };
         AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
         LONG initialWidth = initialRect.right - initialRect.left;
         LONG initialHeight = initialRect.bottom - initialRect.top;
 
         hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
                                winClass.lpszClassName,
-                               L"01. Initialize D3D12",
+                               L"02. Draw the first Triangle",
                                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                CW_USEDEFAULT, CW_USEDEFAULT,
                                initialWidth,
@@ -406,7 +492,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        Render();
+        Draw();
     }
 
     return 0;
