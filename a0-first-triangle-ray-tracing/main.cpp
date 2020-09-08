@@ -1,15 +1,18 @@
 #include "pch.h"
 #include "debug.h"
+#include "DXRHelper.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 
-#pragma comment(lib,"d3dcompiler.lib")
+#pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dxcompiler.lib")
 #pragma comment(lib, "D3D12.lib")
 #pragma comment(lib, "dxgi.lib")
 
 using Microsoft::WRL::ComPtr;
 using DirectX::XMFLOAT3;
 using DirectX::XMFLOAT4;
+using DirectX::XMMatrixIdentity;
 
 const static UINT CLIENT_WIDTH = 1024;
 const static UINT CLIENT_HEIGHT = 768;
@@ -61,7 +64,25 @@ struct Resource
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
 };
 
+struct AccelerationStructureBuffers
+{
+    ComPtr<ID3D12Resource> pScratch;      // Scratch memory for AS builder
+    ComPtr<ID3D12Resource> pResult;       // Where the AS is
+    ComPtr<ID3D12Resource> pInstanceDesc; // Hold the matrices of the instances
+};
+
+struct DXR
+{
+    ComPtr<ID3D12Resource> bottomLevelAS; // Storage for the bottom Level AS
+
+    nv_helpers_dx12::TopLevelASGenerator topLevelASGenerator;
+    AccelerationStructureBuffers topLevelASBuffers;
+
+    std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>> instances;
+};
+
 DX12 dx;
+DXR dxr;
 Resource rsc;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
@@ -144,8 +165,6 @@ void InitD3D(HWND hwnd)
     dx.dxgiFactory = dxgiFactory;
     dx.device = device;
     dx.fence = fence;
-
-    CheckRaytracingSupport(dx.device.Get());
 
     dx.cbvSrvUavDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
@@ -432,6 +451,139 @@ void Draw()
     FlushCommandQueue();
 }
 
+// Create the acceleration structure of an instance
+AccelerationStructureBuffers
+CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers)
+{
+    nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS;
+
+    // Adding all vertex buffers and not transforming their position.
+    for (const auto &buffer : vVertexBuffers)
+    {
+        bottomLevelAS.AddVertexBuffer(buffer.first.Get(), 0, buffer.second,
+                                      sizeof(Vertex), 0, 0);
+    }
+
+    // The AS build requires some scratch space to store temporary information.
+    // The amount of scratch memory is dependent on the scene complexity.
+    UINT64 scratchSizeInBytes = 0;
+    // The final AS also needs to be stored in addition to the existing vertex
+    // buffers. It size is also dependent on the scene complexity.
+    UINT64 resultSizeInBytes = 0;
+
+    bottomLevelAS.ComputeASBufferSizes(dx.device.Get(), false, &scratchSizeInBytes,
+                                       &resultSizeInBytes);
+
+    // Once the sizes are obtained, the application is responsible for allocating
+    // the necessary buffers. Since the entire generation will be done on the GPU,
+    // we can directly allocate those on the default heap
+    AccelerationStructureBuffers buffers;
+
+    buffers.pScratch = nv_helpers_dx12::CreateBuffer(
+        dx.device.Get(), scratchSizeInBytes,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
+        nv_helpers_dx12::kDefaultHeapProps);
+
+    buffers.pResult = nv_helpers_dx12::CreateBuffer(
+        dx.device.Get(), resultSizeInBytes,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+        nv_helpers_dx12::kDefaultHeapProps);
+
+    // Build the acceleration structure. Note that this call integrates a barrier
+    // on the generated AS, so that it can be used to compute a top-level AS right
+    // after this method.
+    bottomLevelAS.Generate(dx.commandList.Get(),
+                           buffers.pScratch.Get(),
+                           buffers.pResult.Get(),
+                           false,
+                           nullptr);
+
+    return buffers;
+}
+
+// Create the main acceleration structure that holds
+void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>& instances)
+{
+    // Gather all the instances into the builder helper
+    for (size_t i = 0; i < instances.size(); i++)
+    {
+        dxr.topLevelASGenerator.AddInstance(instances[i].first.Get(), instances[i].second, UINT(i), UINT(0));
+    }
+
+    // As for the bottom-level AS, the building the AS requires some scratch space
+    // to store temporary data in addition to the actual AS. In the case of the
+    // top-level AS, the instance descriptors also need to be stored in GPU
+    // memory. This call outputs the memory requirements for each (scratch,
+    // results, instance descriptors) so that the application can allocate the
+    // corresponding memory
+    UINT64 scratchSize = 0;
+    UINT64 resultSize = 0;
+    UINT64 instanceDescsSize = 0;
+
+    dxr.topLevelASGenerator.ComputeASBufferSizes(dx.device.Get(), true,
+                                                 &scratchSize,
+                                                 &resultSize,
+                                                 &instanceDescsSize);
+
+    // Create the scratch and result buffers. Since the build is all done on GPU,
+    // those can be allocated on the default heap
+    dxr.topLevelASBuffers.pScratch = nv_helpers_dx12::CreateBuffer(
+        dx.device.Get(), scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nv_helpers_dx12::kDefaultHeapProps);
+
+    dxr.topLevelASBuffers.pResult = nv_helpers_dx12::CreateBuffer(
+        dx.device.Get(),
+        resultSize,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+        nv_helpers_dx12::kDefaultHeapProps);
+
+    // The buffer describing the instances: ID, shader binding information,
+    // matrices ... Those will be copied into the buffer by the helper through
+    // mapping, so the buffer has to be allocated on the upload heap.
+    dxr.topLevelASBuffers.pInstanceDesc = nv_helpers_dx12::CreateBuffer(
+        dx.device.Get(),
+        instanceDescsSize,
+        D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nv_helpers_dx12::kUploadHeapProps);
+
+    // After all the buffers are allocated, or if only an update is required,
+    // we can build the acceleration structure. Note that in the case of the update
+    // we also pass the existing AS as the 'previous' AS, so that it can be refitted in place.
+    dxr.topLevelASGenerator.Generate(dx.commandList.Get(),
+                                     dxr.topLevelASBuffers.pScratch.Get(),
+                                     dxr.topLevelASBuffers.pResult.Get(),
+                                     dxr.topLevelASBuffers.pInstanceDesc.Get());
+}
+
+// Create all acceleration structures, bottom and top
+void CreateAccelerationStructures()
+{
+    // Build the bottom AS from the Triangle vertex buffer
+    AccelerationStructureBuffers bottomLevelBuffers =
+        CreateBottomLevelAS({ std::make_pair(rsc.vertexBuffer.Get(), 3) });
+
+    // Just one instance for now
+    dxr.instances = { std::make_pair(bottomLevelBuffers.pResult, XMMatrixIdentity()) };
+    CreateTopLevelAS(dxr.instances);
+
+    // Flush the command list and wait for it to finish
+    dx.commandList->Close();
+    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
+    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
+
+    FlushCommandQueue();
+
+    // Once the command list is finished executing, reset it to be reused for rendering
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
+
+    // Store the AS buffers. The rest of the buffers will be released once we exit the function
+    dxr.bottomLevelAS = bottomLevelBuffers.pResult;
+}
+
 void KeyDown(WPARAM wparam)
 {
     if (wparam == VK_SPACE)
@@ -506,6 +658,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     InitD3D(hwnd);
     InitPipeline();
+
+    CheckRaytracingSupport(dx.device.Get());
+    CreateAccelerationStructures();
+    dx.commandList->Close();
 
     bool isRunning = true;
     while (isRunning)

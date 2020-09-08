@@ -2,7 +2,7 @@
 #pragma once
 #include <sstream>
 
-#define HR(h) ThrowIfFailed((h), __FILE__, __LINE__, __FUNCTION__);
+#define HR(h) MyThrowIfFailed((h), __FILE__, __LINE__, __FUNCTION__);
 
 std::string exceptionMessage(HRESULT hr, const char* file, const int line, const char* func)
 {
@@ -22,7 +22,7 @@ std::string exceptionMessage(HRESULT hr, const char* file, const int line, const
     return s;
 }
 
-inline void ThrowIfFailed(HRESULT hr, const char* file, const int line, const char* func)
+inline void MyThrowIfFailed(HRESULT hr, const char* file, const int line, const char* func)
 {
     if (FAILED(hr))
     {
