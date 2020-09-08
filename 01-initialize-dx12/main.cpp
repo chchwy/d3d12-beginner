@@ -246,8 +246,8 @@ void Render()
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
 
     // Clear back buffer & depth stencil buffer
-    FLOAT red[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
-    dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), red, 0, nullptr);
+    FLOAT clearColor[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
+    dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), clearColor, 0, nullptr);
     dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
     // Specify the buffers we are going to render to.
