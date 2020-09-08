@@ -63,6 +63,7 @@ DX12 dx;
 Resource rsc;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
+bool raster = true;
 
 void FlushCommandQueue()
 {
@@ -102,6 +103,15 @@ D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()
     return dx.dsvHeap->GetCPUDescriptorHandleForHeapStart();
 }
 
+void CheckRaytracingSupport(ID3D12Device5* device)
+{
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+    HR(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5,
+                                   &options5, sizeof(options5)));
+    if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
+        throw std::runtime_error("Ray tracing not supported on device");
+}
+
 void InitD3D(HWND hwnd)
 {
     dx.width = CLIENT_WIDTH;
@@ -132,6 +142,8 @@ void InitD3D(HWND hwnd)
     dx.dxgiFactory = dxgiFactory;
     dx.device = device;
     dx.fence = fence;
+
+    CheckRaytracingSupport(dx.device.Get());
 
     dx.cbvSrvUavDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
