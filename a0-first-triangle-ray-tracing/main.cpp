@@ -134,7 +134,7 @@ void InitD3D(HWND hwnd)
     HR(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
 
     ID3D12Device5* device = nullptr;
-    HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+    HR(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device)));
 
     ID3D12Fence* fence = nullptr;
     HR(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
@@ -391,18 +391,26 @@ void Draw()
 
     dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
-    // Clear back buffer & depth stencil buffer
-    FLOAT red[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
-    dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), red, 0, nullptr);
-    //dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-
     // Specify the buffers we are going to render to.
     dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
-    // Draw the triangle
-    dx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx.commandList->IASetVertexBuffers(0, 1, &rsc.vertexBufferView);
-    dx.commandList->DrawInstanced(3, 1, 0, 0);
+    if (raster)
+    {
+        // Clear back buffer & depth stencil buffer
+        const float clearColor[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
+        dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), clearColor, 0, nullptr);
+        dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+
+        // Draw the triangle
+        dx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        dx.commandList->IASetVertexBuffers(0, 1, &rsc.vertexBufferView);
+        dx.commandList->DrawInstanced(3, 1, 0, 0);
+    }
+    else
+    {
+        const float clearColor[] = { 0.6f, 0.8f, 0.4f, 1.0f };
+        dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), clearColor, 0, nullptr);
+    }
 
     // Indicate a state transition on the resource usage.
     dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
@@ -422,6 +430,14 @@ void Draw()
     FlushCommandQueue();
 }
 
+void KeyDown(WPARAM wparam)
+{
+    if (wparam == VK_SPACE)
+    {
+        raster = !raster;
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     LRESULT result = 0;
@@ -430,6 +446,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     case WM_KEYDOWN:
     {
         if (wparam == VK_ESCAPE) DestroyWindow(hwnd);
+        else KeyDown(wparam);
         break;
     }
     case WM_DESTROY:
