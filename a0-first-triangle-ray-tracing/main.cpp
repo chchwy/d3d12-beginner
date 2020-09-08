@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "debug.h"
+#include "nv_helpers_dx12/TopLevelASGenerator.h"
+#include "nv_helpers_dx12/BottomLevelASGenerator.h"
 
 #pragma comment(lib,"d3dcompiler.lib")
 #pragma comment(lib, "D3D12.lib")
