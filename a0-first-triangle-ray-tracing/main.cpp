@@ -28,7 +28,7 @@ struct DX12
     ComPtr<ID3D12Device5> device;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12CommandQueue> commandQueue;
-    ComPtr<ID3D12GraphicsCommandList> commandList;
+    ComPtr<ID3D12GraphicsCommandList4> commandList;
     ComPtr<ID3D12CommandAllocator> commandAllocator;
     ComPtr<IDXGISwapChain> swapChain;
 
@@ -313,7 +313,7 @@ void InitPipeline()
     }
 
     // Create the command list
-    ID3D12GraphicsCommandList* commandList;
+    ID3D12GraphicsCommandList4* commandList;
     HR(dx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dx.commandAllocator.Get(), dx.pipelineState.Get(), IID_PPV_ARGS(&commandList)));
     dx.commandList = commandList;
 
