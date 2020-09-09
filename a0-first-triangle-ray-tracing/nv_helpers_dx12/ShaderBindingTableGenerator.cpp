@@ -41,6 +41,8 @@ dispatch rays description.
 #define ROUND_UP(v, powerOf2Alignment) (((v) + (powerOf2Alignment)-1) & ~((powerOf2Alignment)-1))
 #endif
 
+#define max(a, b) ((a > b) ? (a) : (b))
+
 namespace nv_helpers_dx12
 {
 
