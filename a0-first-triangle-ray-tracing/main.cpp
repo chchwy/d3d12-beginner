@@ -343,9 +343,9 @@ void InitPipeline()
         // Define the geometry for a triangle.
         Vertex triangleVertices[] =
         {
-            { { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-            { { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-            { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+            { XMFLOAT3(0.0f, 0.5f, 0.0f),   XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
+            { XMFLOAT3(0.5f, -0.5f, 0.0f),  XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
+            { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
         };
 
         const UINT vertexBufferSize = sizeof(triangleVertices);
@@ -354,11 +354,11 @@ void InitPipeline()
         // Every time the GPU needs it, the upload heap will be marshalled over.
         // Please read up on Default Heap usage.
         // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
-        CD3DX12_HEAP_PROPERTIES healProperties(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_HEAP_PROPERTIES heapProperties(D3D12_HEAP_TYPE_UPLOAD);
         CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
 
         HR(dx.device->CreateCommittedResource(
-            &healProperties,
+            &heapProperties,
             D3D12_HEAP_FLAG_NONE,
             &bufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, // init state
