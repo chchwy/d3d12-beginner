@@ -3,6 +3,8 @@
 #include "DXRHelper.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
+#include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
+#include "nv_helpers_dx12/RootSignatureGenerator.h"
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxcompiler.lib")
