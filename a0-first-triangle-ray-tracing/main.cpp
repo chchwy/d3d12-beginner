@@ -450,11 +450,10 @@ void Draw()
         // #DXR
         // Bind the descriptor heap giving access to the top-level acceleration
         // structure, as well as the ray-tracing output
-        std::vector<ID3D12DescriptorHeap *> heaps = { dxr.srvUavHeap.Get() };
-        dx.commandList->SetDescriptorHeaps(static_cast<UINT>(heaps.size()),
-                                          heaps.data());
+        std::vector<ID3D12DescriptorHeap*> heaps = { dxr.srvUavHeap.Get() };
+        dx.commandList->SetDescriptorHeaps(UINT(heaps.size()), heaps.data());
 
-        // On the last frame, the raytracing output was used as a copy source, to
+        // On the last frame, the ray-tracing output was used as a copy source, to
         // copy its contents into the render target. Now we need to transition it to
         // a UAV so that the shaders can write in it.
         auto transition = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -489,9 +488,10 @@ void Draw()
         // The hit groups section start after the miss shaders. In this sample we
         // have one 1 hit group for the triangle
         uint32_t hitGroupsSectionSize = dxr.sbtHelper.GetHitGroupSectionSize();
-        desc.HitGroupTable.StartAddress = dxr.sbtStorage->GetGPUVirtualAddress() +
-            rayGenerationSectionSizeInBytes +
-            missSectionSizeInBytes;
+        desc.HitGroupTable.StartAddress = dxr.sbtStorage->GetGPUVirtualAddress()
+            + rayGenerationSectionSizeInBytes
+            + missSectionSizeInBytes;
+
         desc.HitGroupTable.SizeInBytes = hitGroupsSectionSize;
         desc.HitGroupTable.StrideInBytes = dxr.sbtHelper.GetHitGroupEntrySize();
 
@@ -511,7 +511,8 @@ void Draw()
         // We can then do the actual copy, before transitioning the render target buffer into a render target,
         // that will be then used to display the image
         transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            dxr.outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            dxr.outputResource.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_COPY_SOURCE);
         dx.commandList->ResourceBarrier(1, &transition);
 
@@ -521,8 +522,7 @@ void Draw()
             D3D12_RESOURCE_STATE_COPY_DEST);
         dx.commandList->ResourceBarrier(1, &transition);
 
-        dx.commandList->CopyResource(CurrentBackBuffer(),
-                                     dxr.outputResource.Get());
+        dx.commandList->CopyResource(CurrentBackBuffer(), dxr.outputResource.Get());
 
         transition = CD3DX12_RESOURCE_BARRIER::Transition(
             CurrentBackBuffer(),
@@ -556,9 +556,11 @@ CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVe
     nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS;
 
     // Adding all vertex buffers and not transforming their position.
-    for (const auto &buffer : vVertexBuffers)
+    for (const auto &bufferPair : vVertexBuffers)
     {
-        bottomLevelAS.AddVertexBuffer(buffer.first.Get(), 0, buffer.second,
+        ComPtr<ID3D12Resource> buffer = bufferPair.first;
+        uint32_t numVertices = bufferPair.second;
+        bottomLevelAS.AddVertexBuffer(buffer.Get(), 0, numVertices,
                                       sizeof(Vertex), 0, 0);
     }
 
@@ -837,10 +839,12 @@ void CreateShaderBindingTable()
     // Create the SBT on the upload heap. This is required as the helper will use
     // mapping to write the SBT contents. After the SBT compilation it could be
     // copied to the default heap for performance.
-    dxr.sbtStorage = nv_helpers_dx12::CreateBuffer(
-        dx.device.Get(), sbtSize, D3D12_RESOURCE_FLAG_NONE,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-    if (!dxr.sbtStorage) {
+    dxr.sbtStorage = nv_helpers_dx12::CreateBuffer(dx.device.Get(), sbtSize,
+                                                   D3D12_RESOURCE_FLAG_NONE,
+                                                   D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                   nv_helpers_dx12::kUploadHeapProps);
+    if (!dxr.sbtStorage)
+    {
         throw std::logic_error("Could not allocate the shader binding table");
     }
     // Compile the SBT from the shader and parameters info

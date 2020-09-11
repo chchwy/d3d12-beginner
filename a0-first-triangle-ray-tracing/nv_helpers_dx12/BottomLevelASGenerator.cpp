@@ -139,7 +139,7 @@ void BottomLevelASGenerator::ComputeASBufferSizes(
 
   // Describe the work being requested, in this case the construction of a
   // (possibly dynamic) bottom-level hierarchy, with the given vertex buffers
-  
+
   D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS prebuildDesc;
   prebuildDesc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
   prebuildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
@@ -159,10 +159,8 @@ void BottomLevelASGenerator::ComputeASBufferSizes(
 
   // Buffer sizes need to be 256-byte-aligned
   *scratchSizeInBytes =
-      ROUND_UP(info.ScratchDataSizeInBytes,
-               D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-  *resultSizeInBytes = ROUND_UP(info.ResultDataMaxSizeInBytes,
-                                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+      ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+  *resultSizeInBytes = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
   // Store the memory requirements for use during build
   m_scratchSizeInBytes = *scratchSizeInBytes;
@@ -174,43 +172,34 @@ void BottomLevelASGenerator::ComputeASBufferSizes(
 // using application-provided buffers and possibly a pointer to the previous
 // acceleration structure in case of iterative updates. Note that the update can
 // be done in place: the result and previousResult pointers can be the same.
-void BottomLevelASGenerator::Generate(
-    ID3D12GraphicsCommandList4
-        *commandList, // Command list on which the build will be enqueued
-    ID3D12Resource *scratchBuffer, // Scratch buffer used by the builder to
-                                   // store temporary data
-    ID3D12Resource
-        *resultBuffer, // Result buffer storing the acceleration structure
-    bool updateOnly,   // If true, simply refit the existing
-                       // acceleration structure
-    ID3D12Resource *previousResult // Optional previous acceleration
-                                   // structure, used if an iterative update
-                                   // is requested
+void BottomLevelASGenerator::Generate(ID3D12GraphicsCommandList4* commandList, // Command list on which the build will be enqueued
+                                      ID3D12Resource *scratchBuffer, // Scratch buffer used by the builder to store temporary
+                                      ID3D12Resource *resultBuffer,  // Result buffer storing the acceleration structure
+                                      bool updateOnly,               // If true, simply refit the existing acceleration structure
+                                      ID3D12Resource *previousResult // Optional previous acceleration structure, used if an iterative update is requested
 ) {
 
   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS flags = m_flags;
   // The stored flags represent whether the AS has been built for updates or
   // not. If yes and an update is requested, the builder is told to only update
   // the AS instead of fully rebuilding it
-  if (flags ==
-          D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE &&
-      updateOnly) {
+  if (flags == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE && updateOnly)
+  {
     flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
   }
 
   // Sanity checks
-  if (m_flags !=
-          D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE &&
-      updateOnly) {
-    throw std::logic_error(
-        "Cannot update a bottom-level AS not originally built for updates");
+  if (m_flags != D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE && updateOnly)
+  {
+    throw std::logic_error("Cannot update a bottom-level AS not originally built for updates");
   }
-  if (updateOnly && previousResult == nullptr) {
-    throw std::logic_error(
-        "Bottom-level hierarchy update requires the previous hierarchy");
+  if (updateOnly && previousResult == nullptr)
+  {
+    throw std::logic_error("Bottom-level hierarchy update requires the previous hierarchy");
   }
 
-  if (m_resultSizeInBytes == 0 || m_scratchSizeInBytes == 0) {
+  if (m_resultSizeInBytes == 0 || m_scratchSizeInBytes == 0)
+  {
     throw std::logic_error(
         "Invalid scratch and result buffer sizes - ComputeASBufferSizes needs "
         "to be called before Build");
@@ -222,12 +211,9 @@ void BottomLevelASGenerator::Generate(
   buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   buildDesc.Inputs.NumDescs = static_cast<UINT>(m_vertexBuffers.size());
   buildDesc.Inputs.pGeometryDescs = m_vertexBuffers.data();
-  buildDesc.DestAccelerationStructureData = {
-      resultBuffer->GetGPUVirtualAddress()};
-  buildDesc.ScratchAccelerationStructureData = {
-      scratchBuffer->GetGPUVirtualAddress()};
-  buildDesc.SourceAccelerationStructureData =
-      previousResult ? previousResult->GetGPUVirtualAddress() : 0;
+  buildDesc.DestAccelerationStructureData = { resultBuffer->GetGPUVirtualAddress() };
+  buildDesc.ScratchAccelerationStructureData = { scratchBuffer->GetGPUVirtualAddress() };
+  buildDesc.SourceAccelerationStructureData = (previousResult) ? previousResult->GetGPUVirtualAddress() : 0;
   buildDesc.Inputs.Flags = flags;
 
   // Build the AS
