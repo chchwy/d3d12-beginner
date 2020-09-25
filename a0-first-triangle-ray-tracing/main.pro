@@ -1,7 +1,7 @@
 CONFIG -= qt
 
 TEMPLATE = app
-TARGET = DX12_a0_First_Triangle_RayTracing
+TARGET = a0-first-triangle-ray-tracing
 
 HEADERS = \
 	d3dx12.h \

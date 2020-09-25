@@ -1,7 +1,7 @@
 CONFIG -= qt
 
 TEMPLATE = app
-TARGET = DX12_02_First_Triangle
+TARGET = dx12-02-first-triangle
 
 HEADERS = d3dx12.h debug.h
 SOURCES = main.cpp
