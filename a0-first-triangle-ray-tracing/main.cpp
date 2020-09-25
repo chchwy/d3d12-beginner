@@ -9,7 +9,7 @@
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxcompiler.lib")
-#pragma comment(lib, "D3D12.lib")
+#pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 
 using Microsoft::WRL::ComPtr;
@@ -727,8 +727,8 @@ void CreateRaytracingPipeline()
     // The pipeline contains the DXIL code of all the shaders potentially executed
     // during the ray-tracing process. This section compiles the HLSL code into a
     // set of DXIL libraries. We chose to separate the code in several libraries
-    // by semantic (ray generation, hit, miss) for clarity. Any code layout can be
-    // used.
+    // by semantic (ray generation, hit, miss) for clarity.
+    // Any code layout can be used.
     dxr.rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen.hlsl");
     dxr.missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss.hlsl");
     dxr.hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit.hlsl");
@@ -788,8 +788,7 @@ void CreateShaderResourceHeap()
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    dx.device->CreateUnorderedAccessView(dxr.outputResource.Get(), nullptr, &uavDesc,
-                                        srvHandle);
+    dx.device->CreateUnorderedAccessView(dxr.outputResource.Get(), nullptr, &uavDesc, srvHandle);
 
     // Add the Top Level AS SRV right after the ray-tracing output buffer
     srvHandle.ptr += dx.cbvSrvUavDescSize;
@@ -800,6 +799,7 @@ void CreateShaderResourceHeap()
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.RaytracingAccelerationStructure.Location =
         dxr.topLevelASBuffers.pResult->GetGPUVirtualAddress();
+
     // Write the acceleration structure view in the heap
     dx.device->CreateShaderResourceView(nullptr, &srvDesc, srvHandle);
 }

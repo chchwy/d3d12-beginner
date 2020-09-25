@@ -87,9 +87,11 @@ void RootSignatureGenerator::AddHeapRangesParameter(
 // this case the index in the heap is the one directly following the last
 // parameter range (or 0 if it's the first)
 void RootSignatureGenerator::AddHeapRangesParameter(
-    std::vector<std::tuple<UINT, /* BaseShaderRegister, */ UINT, /* NumDescriptors */ UINT,
-                           /* RegisterSpace */ D3D12_DESCRIPTOR_RANGE_TYPE,
-                           /* RangeType */ UINT /* OffsetInDescriptorsFromTableStart */>>
+    std::vector<std::tuple<UINT, /* BaseShaderRegister, */
+                           UINT, /* NumDescriptors */
+                           UINT, /* RegisterSpace */
+                           D3D12_DESCRIPTOR_RANGE_TYPE, /* RangeType */
+                           UINT /* OffsetInDescriptorsFromTableStart */>>
         ranges)
 {
   // Build and store the set of descriptors for the ranges
@@ -101,8 +103,7 @@ void RootSignatureGenerator::AddHeapRangesParameter(
     r.NumDescriptors = std::get<RSC_NUM_DESCRIPTORS>(input);
     r.RegisterSpace = std::get<RSC_REGISTER_SPACE>(input);
     r.RangeType = std::get<RSC_RANGE_TYPE>(input);
-    r.OffsetInDescriptorsFromTableStart =
-        std::get<RSC_OFFSET_IN_DESCRIPTORS_FROM_TABLE_START>(input);
+    r.OffsetInDescriptorsFromTableStart = std::get<RSC_OFFSET_IN_DESCRIPTORS_FROM_TABLE_START>(input);
     rangeStorage.push_back(r);
   }
 
@@ -176,7 +177,9 @@ ID3D12RootSignature* RootSignatureGenerator::Generate(ID3D12Device* device, bool
   // Create the root signature from its descriptor
   ID3DBlob* pSigBlob;
   ID3DBlob* pErrorBlob;
-  HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &pSigBlob,
+  HRESULT hr = D3D12SerializeRootSignature(&rootDesc,
+                                           D3D_ROOT_SIGNATURE_VERSION_1_0,
+                                           &pSigBlob,
                                            &pErrorBlob);
   if (FAILED(hr))
   {
