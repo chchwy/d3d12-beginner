@@ -21,3 +21,6 @@ SOURCES = \
 	nv_helpers_dx12/ShaderBindingTableGenerator.cpp
 
 PRECOMPILED_HEADER = pch.h
+
+OBJECTS_DIR = obj
+DESTDIR = bin
