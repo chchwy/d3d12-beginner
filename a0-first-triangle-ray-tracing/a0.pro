@@ -6,6 +6,7 @@ TARGET = a0-first-triangle-ray-tracing
 HEADERS = \
 	d3dx12.h \
 	debug.h \
+	shader.h \
 	nv_helpers_dx12/TopLevelASGenerator.h \
 	nv_helpers_dx12/BottomLevelASGenerator.h \
 	nv_helpers_dx12/RaytracingPipelineGenerator.h \

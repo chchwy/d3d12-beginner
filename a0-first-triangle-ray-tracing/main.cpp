@@ -1,6 +1,8 @@
+
 #include "pch.h"
 #include "debug.h"
-#include "DXRHelper.h"
+#include "shader.h"
+//#include "DXRHelper.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
@@ -581,7 +583,8 @@ CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVe
 
     buffers.pScratch = nv_helpers_dx12::CreateBuffer(
         dx.device.Get(), scratchSizeInBytes,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_COMMON,
         nv_helpers_dx12::kDefaultHeapProps);
 
     buffers.pResult = nv_helpers_dx12::CreateBuffer(
@@ -724,14 +727,9 @@ void CreateRaytracingPipeline()
 {
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(dx.device.Get());
 
-    // The pipeline contains the DXIL code of all the shaders potentially executed
-    // during the ray-tracing process. This section compiles the HLSL code into a
-    // set of DXIL libraries. We chose to separate the code in several libraries
-    // by semantic (ray generation, hit, miss) for clarity.
-    // Any code layout can be used.
-    dxr.rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen.hlsl");
-    dxr.missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss.hlsl");
-    dxr.hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit.hlsl");
+    dxr.rayGenLibrary = CompileShaderLibrary2(L"RayGen.hlsl");
+    dxr.missLibrary = CompileShaderLibrary2(L"Miss.hlsl");
+    dxr.hitLibrary = CompileShaderLibrary2(L"Hit.hlsl");
 
     pipeline.AddLibrary(dxr.rayGenLibrary.Get(), { L"RayGen" });
     pipeline.AddLibrary(dxr.missLibrary.Get(), { L"Miss" });
@@ -851,6 +849,21 @@ void CreateShaderBindingTable()
     dxr.sbtHelper.Generate(dxr.sbtStorage.Get(), dxr.rtStateObjectProps.Get());
 }
 
+void InitDXR()
+{
+    dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get());
+
+    CheckRaytracingSupport(dx.device.Get());
+    CreateAccelerationStructures();
+    
+    dx.commandList->Close();
+
+    CreateRaytracingPipeline();
+    CreateRaytracingOutputBuffer();
+    CreateShaderResourceHeap();
+    CreateShaderBindingTable();
+}
+
 void KeyDown(WPARAM wparam)
 {
     if (wparam == VK_SPACE)
@@ -925,16 +938,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
     InitD3D(hwnd);
     InitPipeline();
-
-    // DXR set up
-    dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get());
-    CheckRaytracingSupport(dx.device.Get());
-    CreateAccelerationStructures();
-    dx.commandList->Close();
-    CreateRaytracingPipeline();
-    CreateRaytracingOutputBuffer();
-    CreateShaderResourceHeap();
-    CreateShaderBindingTable();
+    InitDXR();
 
     bool isRunning = true;
     while (isRunning)
