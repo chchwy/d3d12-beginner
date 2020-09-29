@@ -2,7 +2,6 @@
 #include "pch.h"
 #include "debug.h"
 #include "shader.h"
-//#include "DXRHelper.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
@@ -107,6 +106,47 @@ Resource rsc;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
 bool raster = true;
+
+inline ID3D12Resource* CreateBuffer(ID3D12Device* device,
+                                    uint64_t size,
+                                    D3D12_RESOURCE_FLAGS flags,
+                                    D3D12_RESOURCE_STATES initState,
+                                    const D3D12_HEAP_PROPERTIES& heapProps)
+{
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Alignment = 0;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Flags = flags;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.Height = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufDesc.MipLevels = 1;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.SampleDesc.Quality = 0;
+    bufDesc.Width = size;
+
+    ID3D12Resource* pBuffer;
+    HR(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                                       initState, nullptr, IID_PPV_ARGS(&pBuffer)));
+    return pBuffer;
+}
+
+
+ID3D12DescriptorHeap* CreateDescriptorHeap(UINT count)
+{
+    D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
+    descriptorHeapDesc.NumDescriptors = count;
+    descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    descriptorHeapDesc.NodeMask = 0;
+
+    ID3D12DescriptorHeap* heap = nullptr;
+    dx.device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&heap));
+    //NAME_D3D12_OBJECT(heap);
+    //m_descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    return heap;
+}
 
 void FlushCommandQueue()
 {
@@ -581,17 +621,17 @@ CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVe
     // we can directly allocate those on the default heap
     AccelerationStructureBuffers buffers;
 
-    buffers.pScratch = nv_helpers_dx12::CreateBuffer(
+    buffers.pScratch = CreateBuffer(
         dx.device.Get(), scratchSizeInBytes,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_COMMON,
-        nv_helpers_dx12::kDefaultHeapProps);
+        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
-    buffers.pResult = nv_helpers_dx12::CreateBuffer(
+    buffers.pResult = CreateBuffer(
         dx.device.Get(), resultSizeInBytes,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-        nv_helpers_dx12::kDefaultHeapProps);
+        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
     // Build the acceleration structure. Note that this call integrates a barrier
     // on the generated AS, so that it can be used to compute a top-level AS right
@@ -631,27 +671,27 @@ void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, Direct
 
     // Create the scratch and result buffers. Since the build is all done on GPU,
     // those can be allocated on the default heap
-    dxr.topLevelASBuffers.pScratch = nv_helpers_dx12::CreateBuffer(
+    dxr.topLevelASBuffers.pScratch = CreateBuffer(
         dx.device.Get(), scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nv_helpers_dx12::kDefaultHeapProps);
+        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
-    dxr.topLevelASBuffers.pResult = nv_helpers_dx12::CreateBuffer(
+    dxr.topLevelASBuffers.pResult = CreateBuffer(
         dx.device.Get(),
         resultSize,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-        nv_helpers_dx12::kDefaultHeapProps);
+        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
     // The buffer describing the instances: ID, shader binding information,
     // matrices ... Those will be copied into the buffer by the helper through
     // mapping, so the buffer has to be allocated on the upload heap.
-    dxr.topLevelASBuffers.pInstanceDesc = nv_helpers_dx12::CreateBuffer(
+    dxr.topLevelASBuffers.pInstanceDesc = CreateBuffer(
         dx.device.Get(),
         instanceDescsSize,
         D3D12_RESOURCE_FLAG_NONE,
         D3D12_RESOURCE_STATE_GENERIC_READ,
-        nv_helpers_dx12::kUploadHeapProps);
+        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
 
     // After all the buffers are allocated, or if only an update is required,
     // we can build the acceleration structure. Note that in the case of the update
@@ -768,8 +808,10 @@ void CreateRaytracingOutputBuffer()
     resDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     resDesc.MipLevels = 1;
     resDesc.SampleDesc.Count = 1;
+
+    auto defaultHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
     HR(dx.device->CreateCommittedResource(
-        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+        &defaultHeapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
         D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr,
         IID_PPV_ARGS(&dxr.outputResource)));
 }
@@ -778,8 +820,7 @@ void CreateShaderResourceHeap()
 {
     // Create a SRV/UAV/CBV descriptor heap. We need 2 entries
     // 1 UAV for the ray-tracing output and 1 SRV for the TLAS
-    dxr.srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-        dx.device.Get(), 2, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+    dxr.srvUavHeap = CreateDescriptorHeap(2);
 
     D3D12_CPU_DESCRIPTOR_HANDLE srvHandle =
         dxr.srvUavHeap->GetCPUDescriptorHandleForHeapStart();
@@ -837,10 +878,10 @@ void CreateShaderBindingTable()
     // Create the SBT on the upload heap. This is required as the helper will use
     // mapping to write the SBT contents. After the SBT compilation it could be
     // copied to the default heap for performance.
-    dxr.sbtStorage = nv_helpers_dx12::CreateBuffer(dx.device.Get(), sbtSize,
+    dxr.sbtStorage = CreateBuffer(dx.device.Get(), sbtSize,
                                                    D3D12_RESOURCE_FLAG_NONE,
                                                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                   nv_helpers_dx12::kUploadHeapProps);
+                                                   CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
     if (!dxr.sbtStorage)
     {
         throw std::logic_error("Could not allocate the shader binding table");
