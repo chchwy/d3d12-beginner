@@ -11,3 +11,6 @@ release
 *.pdb
 .vs
 *.sln
+
+*/bin
+*/obj
