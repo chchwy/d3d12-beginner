@@ -4,7 +4,6 @@
 #include "shader.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
-#include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
 #include "nv_helpers_dx12/RootSignatureGenerator.h"
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 
@@ -90,6 +89,7 @@ struct DXR
     ComPtr<ID3D12RootSignature> rayGenSignature;
     ComPtr<ID3D12RootSignature> hitSignature;
     ComPtr<ID3D12RootSignature> missSignature;
+    ComPtr<ID3D12RootSignature> dummyGlobalSignature;
     ComPtr<ID3D12StateObject> rtStateObject;
     ComPtr<ID3D12StateObjectProperties> rtStateObjectProps;
 
@@ -641,7 +641,6 @@ CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVe
                            buffers.pResult.Get(),
                            false,
                            nullptr);
-
     return buffers;
 }
 
@@ -727,27 +726,51 @@ void CreateAccelerationStructures()
     dxr.bottomLevelAS = bottomLevelBuffers.pResult;
 }
 
+ComPtr<ID3D12RootSignature>
+CreateRayTracingRootSignature(const D3D12_ROOT_SIGNATURE_DESC& desc)
+{
+    ComPtr<ID3D12RootSignature> rootSig;
+
+    ComPtr<ID3DBlob> blob;
+    ComPtr<ID3DBlob> error;
+
+    HR(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error));
+    HR(dx.device->CreateRootSignature(1, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rootSig)));
+
+    if (error)
+    {
+        OutputDebugStringW((wchar_t*)error->GetBufferPointer());
+    }
+    return rootSig;
+}
+
 ComPtr<ID3D12RootSignature> CreateRayGenSignature()
 {
-    nv_helpers_dx12::RootSignatureGenerator rsg;
-    rsg.AddHeapRangesParameter(
-        {
-            {
-                0 /*u0*/,
-                1 /*1 descriptor */,
-                0 /*use the implicit register space 0*/,
-                D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,
-                0 /*heap slot where the UAV is defined*/
-            },
-            {
-                0 /*t0*/,
-                1,
-                0,
-                D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,
-                1
-            }
-        });
-    return rsg.Generate(dx.device.Get(), true);
+    D3D12_DESCRIPTOR_RANGE range[2];
+    range[0].BaseShaderRegister = 0; // u0
+    range[0].NumDescriptors = 1;
+    range[0].RegisterSpace = 0;
+    range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    range[0].OffsetInDescriptorsFromTableStart = 0;
+
+    range[1].BaseShaderRegister = 0; // t0
+    range[1].NumDescriptors = 1;
+    range[1].RegisterSpace = 0;
+    range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    range[1].OffsetInDescriptorsFromTableStart = 1;
+
+    D3D12_ROOT_PARAMETER param = {};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    param.DescriptorTable.NumDescriptorRanges = ARRAYSIZE(range);
+    param.DescriptorTable.pDescriptorRanges = range;
+
+    D3D12_ROOT_SIGNATURE_DESC desc = {};
+    desc.NumParameters = 1;
+    desc.pParameters = &param;
+    desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+
+    ComPtr<ID3D12RootSignature> rootSig = CreateRayTracingRootSignature(desc);
+    return rootSig;
 }
 
 ComPtr<ID3D12RootSignature> CreateMissSignature()
@@ -763,32 +786,107 @@ ComPtr<ID3D12RootSignature> CreateHitSignature()
     return rsc.Generate(dx.device.Get(), true);
 }
 
-void CreateRaytracingPipeline()
+void CreateDummyGlobalRootSignatures()
 {
-    nv_helpers_dx12::RayTracingPipelineGenerator pipeline(dx.device.Get());
+    // Creation of the global root signature
+    D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
+    rootDesc.NumParameters = 0;
+    rootDesc.pParameters = nullptr;
+    rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    ComPtr<ID3DBlob> serializedRootSignature;
+    ComPtr<ID3DBlob> error;
+
+    // Create the empty global root signature
+    HR(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSignature, &error));
+    HR(dx.device->CreateRootSignature(0, serializedRootSignature->GetBufferPointer(), serializedRootSignature->GetBufferSize(),
+                                       IID_PPV_ARGS(&dxr.dummyGlobalSignature)));
+}
+
+void CreateRayTracingShaderAndSignatures()
+{
+    CreateDummyGlobalRootSignatures();
 
     dxr.rayGenLibrary = CompileShaderLibrary2(L"RayGen.hlsl");
     dxr.missLibrary = CompileShaderLibrary2(L"Miss.hlsl");
     dxr.hitLibrary = CompileShaderLibrary2(L"Hit.hlsl");
 
-    pipeline.AddLibrary(dxr.rayGenLibrary.Get(), { L"RayGen" });
-    pipeline.AddLibrary(dxr.missLibrary.Get(), { L"Miss" });
-    pipeline.AddLibrary(dxr.hitLibrary.Get(), { L"ClosestHit" });
-
     dxr.rayGenSignature = CreateRayGenSignature();
     dxr.missSignature = CreateMissSignature();
     dxr.hitSignature = CreateHitSignature();
+}
 
-    pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
+void CreateRaytracingPipeline()
+{
+    CD3DX12_STATE_OBJECT_DESC psoDesc(D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
 
-    pipeline.AddRootSignatureAssociation(dxr.rayGenSignature.Get(), { L"RayGen" });
-    pipeline.AddRootSignatureAssociation(dxr.missSignature.Get(), { L"Miss" });
-    pipeline.AddRootSignatureAssociation(dxr.hitSignature.Get(), { L"HitGroup" });
+    // 1. DXIL libraries x3
+    CD3DX12_SHADER_BYTECODE rayGenByteCode(dxr.rayGenLibrary->GetBufferPointer(), dxr.rayGenLibrary->GetBufferSize());
+    auto rayGenLib = psoDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+    rayGenLib->SetDXILLibrary(&rayGenByteCode);
+    rayGenLib->DefineExport(L"RayGen");
 
-    pipeline.SetMaxPayloadSize(4 * sizeof(float)); // RGB + distance
-    pipeline.SetMaxAttributeSize(2 * sizeof(float)); // barycentric coordinates
-    pipeline.SetMaxRecursionDepth(1);
-    dxr.rtStateObject = pipeline.Generate();
+    CD3DX12_SHADER_BYTECODE missByteCode(dxr.missLibrary->GetBufferPointer(), dxr.missLibrary->GetBufferSize());
+    auto missLib = psoDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+    missLib->SetDXILLibrary(&missByteCode);
+    missLib->DefineExport(L"Miss");
+
+    CD3DX12_SHADER_BYTECODE hitByteCode(dxr.hitLibrary->GetBufferPointer(), dxr.hitLibrary->GetBufferSize());
+    auto hitLib = psoDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
+    hitLib->SetDXILLibrary(&hitByteCode);
+    hitLib->DefineExport(L"ClosestHit");
+
+    // 2. Hit Group x1
+    auto hitGroup = psoDesc.CreateSubobject<CD3DX12_HIT_GROUP_SUBOBJECT>();
+    hitGroup->SetClosestHitShaderImport(L"ClosestHit");
+    hitGroup->SetHitGroupExport(L"HitGroup");
+    hitGroup->SetHitGroupType(D3D12_HIT_GROUP_TYPE_TRIANGLES);
+
+    // 3. Shader config x1
+    // Payload size & attribute size
+    const UINT payloadSize = 4 * sizeof(float); // RGB + distance
+    const UINT maxAttributeSize = 2 * sizeof(float); // barycentric coordinates (the default one)
+    auto shaderConfig = psoDesc.CreateSubobject<CD3DX12_RAYTRACING_SHADER_CONFIG_SUBOBJECT>();
+    shaderConfig->Config(payloadSize, maxAttributeSize);
+
+    // 4. Local Root Signatures x3
+    auto rayGenSignature = psoDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
+    rayGenSignature->SetRootSignature(dxr.rayGenSignature.Get());
+
+    auto hitSignature = psoDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
+    hitSignature->SetRootSignature(dxr.hitSignature.Get());
+
+    auto missSignature = psoDesc.CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
+    missSignature->SetRootSignature(dxr.missSignature.Get());
+
+    // 5. Associations x3
+    auto associateRayGen = psoDesc.CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
+    associateRayGen->SetSubobjectToAssociate(*rayGenSignature);
+    associateRayGen->AddExport(L"RayGen");
+
+    auto associateMiss = psoDesc.CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
+    associateMiss->SetSubobjectToAssociate(*missSignature);
+    associateMiss->AddExport(L"Miss");
+
+    auto associateHit = psoDesc.CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
+    associateHit->SetSubobjectToAssociate(*hitSignature);
+    associateHit->AddExport(L"HitGroup");
+
+    // 6. Global Root Signature
+    auto globalRootSignature = psoDesc.CreateSubobject<CD3DX12_GLOBAL_ROOT_SIGNATURE_SUBOBJECT>();
+    globalRootSignature->SetRootSignature(dxr.dummyGlobalSignature.Get());
+
+    // 7. Pipeline config
+    auto pipelineConfig = psoDesc.CreateSubobject<CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT>();
+    pipelineConfig->Config(1); // maxRecursionDepth
+
+    ID3D12StateObject* rtStateObject = nullptr;
+
+    // Create the state object
+    HR(dx.device->CreateStateObject(psoDesc, IID_PPV_ARGS(&rtStateObject)));
+
+    dxr.rtStateObject = rtStateObject;
+
     HR(dxr.rtStateObject->QueryInterface(IID_PPV_ARGS(&dxr.rtStateObjectProps)));
 }
 
@@ -899,6 +997,7 @@ void InitDXR()
     
     dx.commandList->Close();
 
+    CreateRayTracingShaderAndSignatures();
     CreateRaytracingPipeline();
     CreateRaytracingOutputBuffer();
     CreateShaderResourceHeap();
