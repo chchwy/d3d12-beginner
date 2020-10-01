@@ -23,6 +23,11 @@ const static UINT NUM_BACK_BUFFER = 2;
 
 #define ENABLE_DEBUG_LAYER true
 
+#ifndef ROUND_UP
+#define ROUND_UP(v, powerOf2Alignment)                                         \
+  (((v) + (powerOf2Alignment)-1) & ~((powerOf2Alignment)-1))
+#endif
+
 struct Vertex
 {
     XMFLOAT3 position;
@@ -60,10 +65,13 @@ struct DX12
     UINT cbvSrvUavDescSize = 0;
 };
 
-struct Resource
+struct Geometry
 {
     ComPtr<ID3D12Resource> vertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
+
+    ComPtr<ID3D12Resource> asScratchBuffer;
+    ComPtr<ID3D12Resource> asDestBuffer;
 };
 
 struct AccelerationStructureBuffers
@@ -76,7 +84,6 @@ struct AccelerationStructureBuffers
 struct DXR
 {
     ComPtr<ID3D12Resource> bottomLevelAS; // Storage for the bottom Level AS
-
     nv_helpers_dx12::TopLevelASGenerator topLevelASGenerator;
     AccelerationStructureBuffers topLevelASBuffers;
 
@@ -101,7 +108,7 @@ struct DXR
 
 DX12 dx;
 DXR dxr;
-Resource rsc;
+Geometry rsc;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
 bool raster = true;
@@ -601,8 +608,12 @@ CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVe
     {
         ComPtr<ID3D12Resource> buffer = bufferPair.first;
         uint32_t numVertices = bufferPair.second;
-        bottomLevelAS.AddVertexBuffer(buffer.Get(), 0, numVertices,
-                                      sizeof(Vertex), 0, 0);
+        bottomLevelAS.AddVertexBuffer(buffer.Get(),
+                                      0,
+                                      numVertices,
+                                      sizeof(Vertex),
+                                      nullptr,
+                                      0);
     }
 
     // The AS build requires some scratch space to store temporary information.
@@ -700,12 +711,18 @@ void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, Direct
                                      dxr.topLevelASBuffers.pInstanceDesc.Get());
 }
 
+void CreateBottomLevelAccelerationStructures2();
+
 // Create all acceleration structures, bottom and top
 void CreateAccelerationStructures()
 {
     // Build the bottom AS from the Triangle vertex buffer
-    AccelerationStructureBuffers bottomLevelBuffers =
-        CreateBottomLevelAS({ std::make_pair(rsc.vertexBuffer.Get(), 3) });
+    //AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS({ std::make_pair(rsc.vertexBuffer.Get(), 3) });
+
+    CreateBottomLevelAccelerationStructures2();
+    AccelerationStructureBuffers bottomLevelBuffers;
+    bottomLevelBuffers.pScratch = rsc.asScratchBuffer;
+    bottomLevelBuffers.pResult = rsc.asDestBuffer;
 
     // Just one instance for now
     dxr.instances = { std::make_pair(bottomLevelBuffers.pResult, XMMatrixIdentity()) };
@@ -722,7 +739,91 @@ void CreateAccelerationStructures()
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
 
     // Store the AS buffers. The rest of the buffers will be released once we exit the function
-    dxr.bottomLevelAS = bottomLevelBuffers.pResult;
+    //dxr.bottomLevelAS = bottomLevelBuffers.pResult;
+}
+
+void CreateBottomLevelAccelerationStructures2()
+{
+    // Vertex buffer & index buffer
+    const UINT vertexOffsetInBytes = 0;
+    const UINT vertexSizeInBytes = sizeof(Vertex);
+    const UINT vertexCount = 3;
+
+    ID3D12Resource* vertexBuffer = rsc.vertexBuffer.Get();
+
+    D3D12_RAYTRACING_GEOMETRY_DESC geoDescArray[1];
+    geoDescArray[0] = {};
+    geoDescArray[0].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+    geoDescArray[0].Triangles.VertexBuffer.StartAddress = vertexBuffer->GetGPUVirtualAddress() + vertexOffsetInBytes;
+    geoDescArray[0].Triangles.VertexBuffer.StrideInBytes = vertexSizeInBytes;
+    geoDescArray[0].Triangles.VertexCount = vertexCount;
+    geoDescArray[0].Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+    geoDescArray[0].Triangles.IndexBuffer = 0;
+    geoDescArray[0].Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
+    geoDescArray[0].Triangles.IndexCount = 0;
+    geoDescArray[0].Triangles.Transform3x4 = 0;
+    geoDescArray[0].Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+    static_assert(ARRAYSIZE(geoDescArray) == 1, "One geometry!");
+
+    // Compute the size of scratch buffer and resulting buffer.
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+    inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // must match the flags of build Desc
+    inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    inputs.NumDescs = ARRAYSIZE(geoDescArray);
+    inputs.pGeometryDescs = geoDescArray;
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+    dx.device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+
+    const UINT asScratchBufferSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT asDestBufferSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+
+    // Create buffers based on the previously computed size
+    rsc.asScratchBuffer = CreateBuffer(dx.device.Get(),
+                                       asScratchBufferSize,
+                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                       D3D12_RESOURCE_STATE_COMMON,
+                                       CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
+
+    rsc.asDestBuffer = CreateBuffer(dx.device.Get(),
+                                    asDestBufferSize,
+                                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                    D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+                                    CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
+
+    // Fill the bottom level AS build desc
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build;
+    build.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    build.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    build.Inputs.NumDescs = ARRAYSIZE(geoDescArray);
+    build.Inputs.pGeometryDescs = geoDescArray;
+    build.DestAccelerationStructureData = rsc.asDestBuffer->GetGPUVirtualAddress();
+    build.ScratchAccelerationStructureData = rsc.asScratchBuffer->GetGPUVirtualAddress();
+    build.SourceAccelerationStructureData = 0;
+    build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // not allow update
+
+    // Build the AS
+    dx.commandList->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+
+    // Wait for the builder to complete.
+    // This is particularly important as the construction of the top-level hierarchy is called right afterwards
+    D3D12_RESOURCE_BARRIER uavBarrier;
+    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uavBarrier.UAV.pResource = rsc.asDestBuffer.Get();
+    uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    dx.commandList->ResourceBarrier(1, &uavBarrier);
+}
+
+void CreateTopLevelAccelerationStructures2()
+{
+}
+
+void CreateAccelerationStructures2()
+{
+    CreateBottomLevelAccelerationStructures2();
+    CreateTopLevelAccelerationStructures2();
 }
 
 ComPtr<ID3D12RootSignature>
@@ -800,13 +901,15 @@ void CreateDummyGlobalRootSignatures()
     rootDesc.pParameters = nullptr;
     rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
-    ComPtr<ID3DBlob> serializedRootSignature;
+    ComPtr<ID3DBlob> serialized;
     ComPtr<ID3DBlob> error;
 
     // Create the empty global root signature
-    HR(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSignature, &error));
-    HR(dx.device->CreateRootSignature(0, serializedRootSignature->GetBufferPointer(), serializedRootSignature->GetBufferSize(),
-                                       IID_PPV_ARGS(&dxr.dummyGlobalSignature)));
+    HR(D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serialized, &error));
+    HR(dx.device->CreateRootSignature(0, // node mask
+                                      serialized->GetBufferPointer(),
+                                      serialized->GetBufferSize(),
+                                      IID_PPV_ARGS(&dxr.dummyGlobalSignature)));
 }
 
 void CreateRayTracingShaderAndSignatures()
@@ -1000,7 +1103,8 @@ void InitDXR()
 
     CheckRaytracingSupport(dx.device.Get());
     CreateAccelerationStructures();
-    
+    //CreateAccelerationStructures2();
+
     dx.commandList->Close();
 
     CreateRayTracingShaderAndSignatures();
