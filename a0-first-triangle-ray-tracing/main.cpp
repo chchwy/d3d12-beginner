@@ -80,13 +80,19 @@ struct AccelerationStructureBuffers
     ComPtr<ID3D12Resource> pInstanceDesc; // Hold the matrices of the instances
 };
 
+struct ASInstance
+{
+    ComPtr<ID3D12Resource> bottomLevelAS;
+    DirectX::XMMATRIX transform;
+};
+
 struct DXR
 {
     ComPtr<ID3D12Resource> bottomLevelAS; // Storage for the bottom Level AS
     nv_helpers_dx12::TopLevelASGenerator topLevelASGenerator;
     AccelerationStructureBuffers topLevelASBuffers;
 
-    std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>> instances;
+    std::vector<ASInstance> instances;
 
     ComPtr<IDxcBlob> rayGenLibrary;
     ComPtr<IDxcBlob> hitLibrary;
@@ -547,9 +553,7 @@ void Draw()
         desc.Height = CLIENT_HEIGHT;
         desc.Depth = 1;
 
-        // Bind the ray-tracing pipeline
         dx.commandList->SetPipelineState1(dxr.rtStateObject.Get());
-        // Dispatch the rays and write to the ray-tracing output
         dx.commandList->DispatchRays(&desc);
 
         // The ray-tracing output needs to be copied to the actual render target used for display.
@@ -596,70 +600,13 @@ void Draw()
     FlushCommandQueue();
 }
 
-// Create the acceleration structure of an instance
-AccelerationStructureBuffers
-CreateBottomLevelAS(std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers)
-{
-    nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS;
-
-    // Adding all vertex buffers and not transforming their position.
-    for (const auto &bufferPair : vVertexBuffers)
-    {
-        ComPtr<ID3D12Resource> buffer = bufferPair.first;
-        uint32_t numVertices = bufferPair.second;
-        bottomLevelAS.AddVertexBuffer(buffer.Get(),
-                                      0,
-                                      numVertices,
-                                      sizeof(Vertex),
-                                      nullptr,
-                                      0);
-    }
-
-    // The AS build requires some scratch space to store temporary information.
-    // The amount of scratch memory is dependent on the scene complexity.
-    UINT64 scratchSizeInBytes = 0;
-    // The final AS also needs to be stored in addition to the existing vertex
-    // buffers. It size is also dependent on the scene complexity.
-    UINT64 resultSizeInBytes = 0;
-
-    bottomLevelAS.ComputeASBufferSizes(dx.device.Get(), false, &scratchSizeInBytes,
-                                       &resultSizeInBytes);
-
-    // Once the sizes are obtained, the application is responsible for allocating
-    // the necessary buffers. Since the entire generation will be done on the GPU,
-    // we can directly allocate those on the default heap
-    AccelerationStructureBuffers buffers;
-
-    buffers.pScratch = CreateBuffer(
-        dx.device.Get(), scratchSizeInBytes,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_COMMON,
-        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
-
-    buffers.pResult = CreateBuffer(
-        dx.device.Get(), resultSizeInBytes,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
-
-    // Build the acceleration structure. Note that this call integrates a barrier
-    // on the generated AS, so that it can be used to compute a top-level AS right
-    // after this method.
-    bottomLevelAS.Generate(dx.commandList.Get(),
-                           buffers.pScratch.Get(),
-                           buffers.pResult.Get(),
-                           false,
-                           nullptr);
-    return buffers;
-}
-
 // Create the main acceleration structure that holds
-void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>& instances)
+void CreateTopLevelAS(const std::vector<ASInstance>& instances)
 {
     // Gather all the instances into the builder helper
     for (size_t i = 0; i < instances.size(); i++)
     {
-        dxr.topLevelASGenerator.AddInstance(instances[i].first.Get(), instances[i].second, UINT(i), UINT(0));
+        dxr.topLevelASGenerator.AddInstance(instances[i].bottomLevelAS.Get(), instances[i].transform, UINT(i), UINT(0));
     }
 
     // As for the bottom-level AS, the building the AS requires some scratch space
@@ -691,9 +638,9 @@ void CreateTopLevelAS(const std::vector<std::pair<ComPtr<ID3D12Resource>, Direct
         D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
-    // The buffer describing the instances: ID, shader binding information,
-    // matrices ... Those will be copied into the buffer by the helper through
-    // mapping, so the buffer has to be allocated on the upload heap.
+    // The buffer describing the instances: ID, shader binding information, matrices ...
+    // Those will be copied into the buffer by the helper through mapping,
+    // so the buffer has to be allocated on the upload heap.
     dxr.topLevelASBuffers.pInstanceDesc = CreateBuffer(
         dx.device.Get(),
         instanceDescsSize,
@@ -716,15 +663,14 @@ void CreateBottomLevelAccelerationStructures2();
 void CreateAccelerationStructures()
 {
     // Build the bottom AS from the Triangle vertex buffer
-    //AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS({ std::make_pair(rsc.vertexBuffer.Get(), 3) });
-
     CreateBottomLevelAccelerationStructures2();
+    
     AccelerationStructureBuffers bottomLevelBuffers;
     bottomLevelBuffers.pScratch = rsc.asScratchBuffer;
     bottomLevelBuffers.pResult = rsc.asDestBuffer;
 
     // Just one instance for now
-    dxr.instances = { std::make_pair(bottomLevelBuffers.pResult, XMMatrixIdentity()) };
+    dxr.instances.push_back({ bottomLevelBuffers.pResult, XMMatrixIdentity() });
     CreateTopLevelAS(dxr.instances);
 
     // Flush the command list and wait for it to finish
