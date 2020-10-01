@@ -4,7 +4,6 @@
 #include "shader.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
-#include "nv_helpers_dx12/RootSignatureGenerator.h"
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 
 #pragma comment(lib, "d3dcompiler.lib")
@@ -727,7 +726,7 @@ void CreateAccelerationStructures()
 }
 
 ComPtr<ID3D12RootSignature>
-CreateRayTracingRootSignature(const D3D12_ROOT_SIGNATURE_DESC& desc)
+CreateRootSignature(const D3D12_ROOT_SIGNATURE_DESC& desc)
 {
     ComPtr<ID3D12RootSignature> rootSig;
 
@@ -769,21 +768,28 @@ ComPtr<ID3D12RootSignature> CreateRayGenSignature()
     desc.pParameters = &param;
     desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
 
-    ComPtr<ID3D12RootSignature> rootSig = CreateRayTracingRootSignature(desc);
+    ComPtr<ID3D12RootSignature> rootSig = CreateRootSignature(desc);
     return rootSig;
 }
 
 ComPtr<ID3D12RootSignature> CreateMissSignature()
 {
-    nv_helpers_dx12::RootSignatureGenerator rsc;
-    return rsc.Generate(dx.device.Get(), true);
+    CD3DX12_ROOT_SIGNATURE_DESC d(0, nullptr);
+    d.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+    return CreateRootSignature(d);
 }
 
 ComPtr<ID3D12RootSignature> CreateHitSignature()
 {
-    nv_helpers_dx12::RootSignatureGenerator rsc;
-    rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV);
-    return rsc.Generate(dx.device.Get(), true);
+    D3D12_ROOT_PARAMETER param[1];
+    param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    param[0].Descriptor.ShaderRegister = 0;
+    param[0].Descriptor.RegisterSpace = 0;
+    param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    CD3DX12_ROOT_SIGNATURE_DESC d(1, param);
+    d.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+    return CreateRootSignature(d);
 }
 
 void CreateDummyGlobalRootSignatures()
