@@ -3,7 +3,6 @@
 #include "debug.h"
 #include "shader.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
-#include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 
 #pragma comment(lib, "d3dcompiler.lib")
