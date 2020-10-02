@@ -2,7 +2,6 @@
 #include "pch.h"
 #include "debug.h"
 #include "shader.h"
-#include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 
 #pragma comment(lib, "d3dcompiler.lib")
@@ -14,6 +13,7 @@ using Microsoft::WRL::ComPtr;
 using DirectX::XMFLOAT3;
 using DirectX::XMFLOAT4;
 using DirectX::XMMatrixIdentity;
+using DirectX::XMMatrixTranspose;
 
 const static UINT CLIENT_WIDTH = 1024;
 const static UINT CLIENT_HEIGHT = 768;
@@ -69,27 +69,27 @@ struct Geometry
     ComPtr<ID3D12Resource> vertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
 
-    ComPtr<ID3D12Resource> asScratchBuffer;
     ComPtr<ID3D12Resource> asDestBuffer;
 };
 
 struct AccelerationStructureBuffers
 {
-    ComPtr<ID3D12Resource> pScratch;      // Scratch memory for AS builder
-    ComPtr<ID3D12Resource> pResult;       // Where the AS is
-    ComPtr<ID3D12Resource> pInstanceDesc; // Hold the matrices of the instances
+    ComPtr<ID3D12Resource> scratch;      // Scratch memory for AS builder
+    ComPtr<ID3D12Resource> result;       // Where the AS is
+    ComPtr<ID3D12Resource> instanceDesc; // Hold the matrices of the instances
 };
 
 struct ASInstance
 {
     ComPtr<ID3D12Resource> bottomLevelAS;
     DirectX::XMMATRIX transform;
+    UINT instanceID = 0;
+    UINT hitGroupIndex = 0;
 };
 
 struct DXR
 {
     ComPtr<ID3D12Resource> bottomLevelAS; // Storage for the bottom Level AS
-    nv_helpers_dx12::TopLevelASGenerator topLevelASGenerator;
     AccelerationStructureBuffers topLevelASBuffers;
 
     std::vector<ASInstance> instances;
@@ -101,6 +101,7 @@ struct DXR
     ComPtr<ID3D12RootSignature> hitSignature;
     ComPtr<ID3D12RootSignature> missSignature;
     ComPtr<ID3D12RootSignature> dummyGlobalSignature;
+
     ComPtr<ID3D12StateObject> rtStateObject;
     ComPtr<ID3D12StateObjectProperties> rtStateObjectProps;
 
@@ -601,37 +602,37 @@ void Draw()
 }
 
 // Create the main acceleration structure that holds
-void CreateTopLevelAS(const std::vector<ASInstance>& instances)
+void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instances)
 {
-    // Gather all the instances into the builder helper
-    for (size_t i = 0; i < instances.size(); i++)
-    {
-        dxr.topLevelASGenerator.AddInstance(instances[i].bottomLevelAS.Get(), instances[i].transform, UINT(i), UINT(0));
-    }
+    const UINT numInstance = UINT(instances.size());
 
-    // As for the bottom-level AS, the building the AS requires some scratch space
-    // to store temporary data in addition to the actual AS. In the case of the
-    // top-level AS, the instance descriptors also need to be stored in GPU
-    // memory. This call outputs the memory requirements for each (scratch,
-    // results, instance descriptors) so that the application can allocate the
-    // corresponding memory
-    UINT64 scratchSize = 0;
-    UINT64 resultSize = 0;
-    UINT64 instanceDescsSize = 0;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS prebuildDesc = {};
+    prebuildDesc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    prebuildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    prebuildDesc.NumDescs = numInstance;
+    prebuildDesc.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
 
-    dxr.topLevelASGenerator.ComputeASBufferSizes(dx.device.Get(), true,
-                                                 &scratchSize,
-                                                 &resultSize,
-                                                 &instanceDescsSize);
+    // Building the acceleration structure (AS) requires some scratch space,
+    // as well as space to store the resulting structure
+    // This function computes a conservative estimate of the memory requirements for both,
+    // based on the number of bottom-level instances.
+    dx.device->GetRaytracingAccelerationStructurePrebuildInfo(&prebuildDesc, &info);
+
+    const UINT64 scratchSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT64 resultSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT64 instanceDescsSize = ROUND_UP(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * UINT64(numInstance), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
     // Create the scratch and result buffers. Since the build is all done on GPU,
     // those can be allocated on the default heap
-    dxr.topLevelASBuffers.pScratch = CreateBuffer(
-        dx.device.Get(), scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+    dxr.topLevelASBuffers.scratch = CreateBuffer(
+        dx.device.Get(), scratchSize,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
-    dxr.topLevelASBuffers.pResult = CreateBuffer(
+    dxr.topLevelASBuffers.result = CreateBuffer(
         dx.device.Get(),
         resultSize,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -641,20 +642,64 @@ void CreateTopLevelAS(const std::vector<ASInstance>& instances)
     // The buffer describing the instances: ID, shader binding information, matrices ...
     // Those will be copied into the buffer by the helper through mapping,
     // so the buffer has to be allocated on the upload heap.
-    dxr.topLevelASBuffers.pInstanceDesc = CreateBuffer(
+    dxr.topLevelASBuffers.instanceDesc = CreateBuffer(
         dx.device.Get(),
         instanceDescsSize,
         D3D12_RESOURCE_FLAG_NONE,
         D3D12_RESOURCE_STATE_GENERIC_READ,
         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
 
-    // After all the buffers are allocated, or if only an update is required,
-    // we can build the acceleration structure. Note that in the case of the update
-    // we also pass the existing AS as the 'previous' AS, so that it can be refitted in place.
-    dxr.topLevelASGenerator.Generate(dx.commandList.Get(),
-                                     dxr.topLevelASBuffers.pScratch.Get(),
-                                     dxr.topLevelASBuffers.pResult.Get(),
-                                     dxr.topLevelASBuffers.pInstanceDesc.Get());
+    // After all the buffers are allocated, or if only an update is required, we can build the acceleration structure.
+    // Note that in the case of the update, we also pass the existing AS as the 'previous' AS, so that it can be refitted in place.
+
+    ComPtr<ID3D12Resource> descriptorsBuffer = dxr.topLevelASBuffers.instanceDesc;
+
+    // Copy the descriptors in the target descriptor buffer
+    D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs;
+    descriptorsBuffer->Map(0, nullptr, (void**)(&instanceDescs));
+    if (!instanceDescs)
+    {
+        throw std::logic_error("Cannot map the instance descriptor buffer - is it in the upload heap?");
+    }
+
+    // Initialize the memory to zero on the first time only
+    ZeroMemory(instanceDescs, instanceDescsSize);
+    
+    // Create the description for each instance
+    for (uint32_t i = 0; i < numInstance; i++)
+    {
+        instanceDescs[i].InstanceID = instances[i].instanceID; //visible in the shader in InstanceID()
+        instanceDescs[i].InstanceContributionToHitGroupIndex = instances[i].hitGroupIndex; // Index of the hit group invoked upon intersection
+        instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE; // Instance flags, including backface culling, winding etc.
+        instanceDescs[i].AccelerationStructure = instances[i].bottomLevelAS->GetGPUVirtualAddress(); // Get access to the bottom level
+        instanceDescs[i].InstanceMask = 0xFF; // Visibility mask, always visible here
+
+        DirectX::XMMATRIX m = XMMatrixTranspose(instances[i].transform); // GLM is column major, the INSTANCE_DESC is row major
+        memcpy(instanceDescs[i].Transform, &m, sizeof(instanceDescs[i].Transform));
+    }
+    descriptorsBuffer->Unmap(0, nullptr);
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+    buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    buildDesc.Inputs.InstanceDescs = descriptorsBuffer->GetGPUVirtualAddress();
+    buildDesc.Inputs.NumDescs = numInstance;
+    buildDesc.DestAccelerationStructureData = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
+    buildDesc.ScratchAccelerationStructureData = dxr.topLevelASBuffers.scratch->GetGPUVirtualAddress();
+    buildDesc.SourceAccelerationStructureData = 0;
+    buildDesc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+
+    // Build the top-level AS
+    dx.commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+
+    // Wait for the builder to complete by setting a barrier on the resulting buffer.
+    D3D12_RESOURCE_BARRIER uavBarrier;
+    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uavBarrier.UAV.pResource = dxr.topLevelASBuffers.result.Get();
+    uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    dx.commandList->ResourceBarrier(1, &uavBarrier);
+    
+    dxr.topLevelASBuffers.scratch.Reset();
 }
 
 void CreateBottomLevelAccelerationStructures2();
@@ -663,15 +708,11 @@ void CreateBottomLevelAccelerationStructures2();
 void CreateAccelerationStructures()
 {
     // Build the bottom AS from the Triangle vertex buffer
-    CreateBottomLevelAccelerationStructures2();
+    CreateBottomLevelAccelerationStructures2();    
     
-    AccelerationStructureBuffers bottomLevelBuffers;
-    bottomLevelBuffers.pScratch = rsc.asScratchBuffer;
-    bottomLevelBuffers.pResult = rsc.asDestBuffer;
-
     // Just one instance for now
-    dxr.instances.push_back({ bottomLevelBuffers.pResult, XMMatrixIdentity() });
-    CreateTopLevelAS(dxr.instances);
+    dxr.instances.push_back({ rsc.asDestBuffer, XMMatrixIdentity(), 0, 0 });
+    CreateTopLevelAccelerationStructures2(dxr.instances);
 
     // Flush the command list and wait for it to finish
     dx.commandList->Close();
@@ -682,9 +723,6 @@ void CreateAccelerationStructures()
 
     // Once the command list is finished executing, reset it to be reused for rendering
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
-
-    // Store the AS buffers. The rest of the buffers will be released once we exit the function
-    //dxr.bottomLevelAS = bottomLevelBuffers.pResult;
 }
 
 void CreateBottomLevelAccelerationStructures2()
@@ -726,11 +764,12 @@ void CreateBottomLevelAccelerationStructures2()
     const UINT asDestBufferSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
     // Create buffers based on the previously computed size
-    rsc.asScratchBuffer = CreateBuffer(dx.device.Get(),
-                                       asScratchBufferSize,
-                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                       D3D12_RESOURCE_STATE_COMMON,
-                                       CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
+    ComPtr<ID3D12Resource> asScratchBuffer;
+    asScratchBuffer = CreateBuffer(dx.device.Get(),
+                                   asScratchBufferSize,
+                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                   D3D12_RESOURCE_STATE_COMMON,
+                                   CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
     rsc.asDestBuffer = CreateBuffer(dx.device.Get(),
                                     asDestBufferSize,
@@ -745,7 +784,7 @@ void CreateBottomLevelAccelerationStructures2()
     build.Inputs.NumDescs = ARRAYSIZE(geoDescArray);
     build.Inputs.pGeometryDescs = geoDescArray;
     build.DestAccelerationStructureData = rsc.asDestBuffer->GetGPUVirtualAddress();
-    build.ScratchAccelerationStructureData = rsc.asScratchBuffer->GetGPUVirtualAddress();
+    build.ScratchAccelerationStructureData = asScratchBuffer->GetGPUVirtualAddress();
     build.SourceAccelerationStructureData = 0;
     build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // not allow update
 
@@ -759,16 +798,8 @@ void CreateBottomLevelAccelerationStructures2()
     uavBarrier.UAV.pResource = rsc.asDestBuffer.Get();
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     dx.commandList->ResourceBarrier(1, &uavBarrier);
-}
 
-void CreateTopLevelAccelerationStructures2()
-{
-}
-
-void CreateAccelerationStructures2()
-{
-    CreateBottomLevelAccelerationStructures2();
-    CreateTopLevelAccelerationStructures2();
+    asScratchBuffer.Reset();
 }
 
 ComPtr<ID3D12RootSignature>
@@ -989,7 +1020,7 @@ void CreateShaderResourceHeap()
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.RaytracingAccelerationStructure.Location =
-        dxr.topLevelASBuffers.pResult->GetGPUVirtualAddress();
+        dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
 
     // Write the acceleration structure view in the heap
     dx.device->CreateShaderResourceView(nullptr, &srvDesc, srvHandle);
@@ -1048,7 +1079,6 @@ void InitDXR()
 
     CheckRaytracingSupport(dx.device.Get());
     CreateAccelerationStructures();
-    //CreateAccelerationStructures2();
 
     dx.commandList->Close();
 
