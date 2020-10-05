@@ -134,11 +134,6 @@ void InitD3D(HWND hwnd)
     dx.commandList = commandList;
     dx.commandAllocator = commandAllocator;
 
-    // Start off in a closed state.
-    // This is because the first time we refer to the command list we will Reset it
-    // and it needs to be closed before calling Reset
-    commandList->Close();
-
     // Create SwapChain
     DXGI_SWAP_CHAIN_DESC sd = {};
     sd.BufferDesc.Width = CLIENT_WIDTH;
@@ -213,21 +208,22 @@ void InitD3D(HWND hwnd)
     ID3D12Resource* depthStencilBuffer = nullptr;
     CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_DEFAULT);
     HR(dx.device->CreateCommittedResource(&heapProp, D3D12_HEAP_FLAG_NONE,
-                                        &d, D3D12_RESOURCE_STATE_COMMON, &c,
-                                        IID_PPV_ARGS(&depthStencilBuffer)));
+                                          &d, D3D12_RESOURCE_STATE_COMMON, &c,
+                                          IID_PPV_ARGS(&depthStencilBuffer)));
 
     dx.depthStencilBuffer = depthStencilBuffer;
 
     D3D12_CPU_DESCRIPTOR_HANDLE handle = dx.dsvHeap->GetCPUDescriptorHandleForHeapStart();
     dx.device->CreateDepthStencilView(dx.depthStencilBuffer.Get(), nullptr, handle); // nullptr only works when the buffer is not typeless
 
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     dx.commandList->ResourceBarrier(1, &barrier);
-
     dx.commandList->Close();
 
     ID3D12CommandList* cmdLists[] = { dx.commandList.Get() };
     dx.commandQueue->ExecuteCommandLists(1, cmdLists);
+
+    FlushCommandQueue();
 }
 
 void Render()
@@ -239,8 +235,9 @@ void Render()
     // Reusing the command list reuses memory.
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-                                                                              D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+    auto barrier1 = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    dx.commandList->ResourceBarrier(1, &barrier1);
+
     // This needs to be reset whenever the command list is reset.
     dx.commandList->RSSetViewports(1, &dx.viewport);
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
@@ -254,12 +251,11 @@ void Render()
     dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
     // Indicate a state transition on the resource usage.
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-                                                                           D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+    auto barrier2 = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+    dx.commandList->ResourceBarrier(1, &barrier2);
 
     HR(dx.commandList->Close()); // Done recording commands.
 
-    // Execute command list
     ID3D12CommandList* cmdsLists[] = { dx.commandList.Get() };
     dx.commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
