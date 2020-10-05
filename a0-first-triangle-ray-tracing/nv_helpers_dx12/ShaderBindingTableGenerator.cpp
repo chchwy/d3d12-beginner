@@ -101,7 +101,7 @@ uint32_t ShaderBindingTableGenerator::ComputeSBTSize()
 //--------------------------------------------------------------------------------------------------
 //
 // Build the SBT and store it into sbtBuffer, which has to be pre-allocated on the upload heap.
-// Access to the raytracing pipeline object is required to fetch program identifiers using their
+// Access to the ray tracing pipeline object is required to fetch program identifiers using their
 // names
 void ShaderBindingTableGenerator::Generate(ID3D12Resource* sbtBuffer,
                                            ID3D12StateObjectProperties* raytracingPipeline)

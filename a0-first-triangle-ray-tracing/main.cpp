@@ -155,8 +155,6 @@ ID3D12DescriptorHeap* CreateDescriptorHeap(UINT count)
 
     ID3D12DescriptorHeap* heap = nullptr;
     dx.device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&heap));
-    //NAME_D3D12_OBJECT(heap);
-    //m_descriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     return heap;
 }
 
@@ -187,10 +185,10 @@ ID3D12Resource* CurrentBackBuffer()
 
 D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView()
 {
-    return CD3DX12_CPU_DESCRIPTOR_HANDLE(
-        dx.rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-        currBackBuffer,
-        dx.rtvDescSize);
+    const D3D12_CPU_DESCRIPTOR_HANDLE baseAddr = dx.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    const INT offset = currBackBuffer;
+    const UINT descriptorSize = dx.rtvDescSize;
+    return CD3DX12_CPU_DESCRIPTOR_HANDLE(baseAddr, offset, descriptorSize);
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()
@@ -702,29 +700,6 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
     dxr.topLevelASBuffers.scratch.Reset();
 }
 
-void CreateBottomLevelAccelerationStructures2();
-
-// Create all acceleration structures, bottom and top
-void CreateAccelerationStructures()
-{
-    // Build the bottom AS from the Triangle vertex buffer
-    CreateBottomLevelAccelerationStructures2();    
-    
-    // Just one instance for now
-    dxr.instances.push_back({ rsc.asDestBuffer, XMMatrixIdentity(), 0, 0 });
-    CreateTopLevelAccelerationStructures2(dxr.instances);
-
-    // Flush the command list and wait for it to finish
-    dx.commandList->Close();
-    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
-    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
-
-    FlushCommandQueue();
-
-    // Once the command list is finished executing, reset it to be reused for rendering
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
-}
-
 void CreateBottomLevelAccelerationStructures2()
 {
     // Vertex buffer & index buffer
@@ -800,6 +775,27 @@ void CreateBottomLevelAccelerationStructures2()
     dx.commandList->ResourceBarrier(1, &uavBarrier);
 
     asScratchBuffer.Reset();
+}
+
+// Create all acceleration structures, bottom and top
+void CreateAccelerationStructures()
+{
+    // Build the bottom AS from the Triangle vertex buffer
+    CreateBottomLevelAccelerationStructures2();
+
+    // Just one instance for now
+    dxr.instances.push_back({ rsc.asDestBuffer, XMMatrixIdentity(), 0, 0 });
+    CreateTopLevelAccelerationStructures2(dxr.instances);
+
+    // Flush the command list and wait for it to finish
+    dx.commandList->Close();
+    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
+    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
+
+    FlushCommandQueue();
+
+    // Once the command list is finished executing, reset it to be reused for rendering
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
 }
 
 ComPtr<ID3D12RootSignature>
@@ -1005,22 +1001,22 @@ void CreateShaderResourceHeap()
     // 1 UAV for the ray-tracing output and 1 SRV for the TLAS
     dxr.srvUavHeap = CreateDescriptorHeap(2);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE srvHandle =
-        dxr.srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+    CD3DX12_CPU_DESCRIPTOR_HANDLE uavHandle(dxr.srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                                            0, dx.cbvSrvUavDescSize);
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
     uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    dx.device->CreateUnorderedAccessView(dxr.outputResource.Get(), nullptr, &uavDesc, srvHandle);
+    dx.device->CreateUnorderedAccessView(dxr.outputResource.Get(), nullptr, &uavDesc, uavHandle);
 
     // Add the Top Level AS SRV right after the ray-tracing output buffer
-    srvHandle.ptr += dx.cbvSrvUavDescSize;
+    CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(dxr.srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                                            1, dx.cbvSrvUavDescSize);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
     srvDesc.Format = DXGI_FORMAT_UNKNOWN;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.RaytracingAccelerationStructure.Location =
-        dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
+    srvDesc.RaytracingAccelerationStructure.Location = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
 
     // Write the acceleration structure view in the heap
     dx.device->CreateShaderResourceView(nullptr, &srvDesc, srvHandle);
@@ -1036,9 +1032,9 @@ void CreateShaderBindingTable()
     D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle = dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
 
     // The helper treats both root parameter pointers and heap pointers as void*, 
-    // while DX12 uses the // D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers.
-    // The pointer in this // struct is a UINT64, which then has to be reinterpreted as a pointer.
-    auto heapPointer = reinterpret_cast<UINT64 *>(srvUavHeapHandle.ptr);
+    // while DX12 uses the D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers.
+    // The pointer in this struct is a UINT64, which then has to be reinterpreted as a pointer.
+    auto heapPointer = (UINT64*)(srvUavHeapHandle.ptr);
 
     // The ray generation only uses heap data
     dxr.sbtHelper.AddRayGenerationProgram(L"RayGen", { heapPointer });
@@ -1048,7 +1044,7 @@ void CreateShaderBindingTable()
     dxr.sbtHelper.AddMissProgram(L"Miss", {});
 
     // Adding the triangle hit shader
-    dxr.sbtHelper.AddHitGroup(L"HitGroup", { (void *)(rsc.vertexBuffer->GetGPUVirtualAddress()) });
+    dxr.sbtHelper.AddHitGroup(L"HitGroup", { (void*)(rsc.vertexBuffer->GetGPUVirtualAddress()) });
 
     // Compute the size of the SBT given the number of shaders and their
     // parameters
@@ -1057,14 +1053,13 @@ void CreateShaderBindingTable()
     // Create the SBT on the upload heap. This is required as the helper will use
     // mapping to write the SBT contents. After the SBT compilation it could be
     // copied to the default heap for performance.
-    dxr.sbtStorage = CreateBuffer(dx.device.Get(), sbtSize,
-                                                   D3D12_RESOURCE_FLAG_NONE,
-                                                   D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                   CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
-    if (!dxr.sbtStorage)
-    {
-        throw std::logic_error("Could not allocate the shader binding table");
-    }
+    dxr.sbtStorage = CreateBuffer(dx.device.Get(), 
+                                  sbtSize,
+                                  D3D12_RESOURCE_FLAG_NONE,
+                                  D3D12_RESOURCE_STATE_GENERIC_READ,
+                                  CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
+    assert(!dxr.sbtStorage);
+    
     // Compile the SBT from the shader and parameters info
     dxr.sbtHelper.Generate(dxr.sbtStorage.Get(), dxr.rtStateObjectProps.Get());
 }
