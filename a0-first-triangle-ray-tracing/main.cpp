@@ -1028,19 +1028,16 @@ void CreateShaderResourceHeap()
 
 void CreateShaderBindingTable()
 {
-    // The SBT helper class collects calls to Add*Program.  If called several
-    // times, the helper must be emptied before re-adding shaders.
+    // The SBT helper class collects calls to Add*Program.
+    // If called several times, the helper must be emptied before re-adding shaders.
     dxr.sbtHelper.Reset();
 
-    // The pointer to the beginning of the heap is the only parameter required by
-    // shaders without root parameters
-    D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle =
-        dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+    // The pointer to the beginning of the heap is the only parameter required by shaders without root parameters
+    D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle = dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
 
-    // The helper treats both root parameter pointers and heap pointers as void*,
-    // while DX12 uses the
-    // D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this
-    // struct is a UINT64, which then has to be reinterpreted as a pointer.
+    // The helper treats both root parameter pointers and heap pointers as void*, 
+    // while DX12 uses the // D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers.
+    // The pointer in this // struct is a UINT64, which then has to be reinterpreted as a pointer.
     auto heapPointer = reinterpret_cast<UINT64 *>(srvUavHeapHandle.ptr);
 
     // The ray generation only uses heap data
@@ -1051,8 +1048,7 @@ void CreateShaderBindingTable()
     dxr.sbtHelper.AddMissProgram(L"Miss", {});
 
     // Adding the triangle hit shader
-    dxr.sbtHelper.AddHitGroup(L"HitGroup",
-                            { (void *)(rsc.vertexBuffer->GetGPUVirtualAddress()) });
+    dxr.sbtHelper.AddHitGroup(L"HitGroup", { (void *)(rsc.vertexBuffer->GetGPUVirtualAddress()) });
 
     // Compute the size of the SBT given the number of shaders and their
     // parameters
