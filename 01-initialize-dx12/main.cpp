@@ -73,14 +73,15 @@ ID3D12Resource* CurrentBackBuffer()
 
 D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView()
 {
-    return CD3DX12_CPU_DESCRIPTOR_HANDLE(
-        dx.rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-        currBackBuffer,
-        dx.rtvDescSize);
+    const D3D12_CPU_DESCRIPTOR_HANDLE baseAddr = dx.rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    const INT offset = currBackBuffer;
+    const UINT descriptorSize = dx.rtvDescSize;
+    return CD3DX12_CPU_DESCRIPTOR_HANDLE(baseAddr, offset, descriptorSize);
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()
 {
+    // Only one descriptor in the DSV heap. Return the first one (at index 0).
     return dx.dsvHeap->GetCPUDescriptorHandleForHeapStart();
 }
 
