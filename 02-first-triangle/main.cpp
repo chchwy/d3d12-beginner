@@ -300,16 +300,6 @@ void InitPipeline()
         HR(dx.device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&dx.pipelineState)));
     }
 
-    // Create the command list
-    ID3D12GraphicsCommandList* commandList;
-    HR(dx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dx.commandAllocator.Get(), dx.pipelineState.Get(), IID_PPV_ARGS(&commandList)));
-    dx.commandList = commandList;
-
-    // Start off in a closed state.
-    // This is because the first time we refer to the command list we will Reset it
-    // and it needs to be closed before calling Reset
-    commandList->Close();
-
     // Create the vertex buffer.
     {
         // Define the geometry for a triangle.
@@ -353,10 +343,17 @@ void InitPipeline()
     }
 
     // Resource barrier for depth stencil buffer
+    // Create the command list
+    ID3D12GraphicsCommandList* commandList;
+    HR(dx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dx.commandAllocator.Get(), dx.pipelineState.Get(), IID_PPV_ARGS(&commandList)));
+    dx.commandList = commandList;
 
+    // Start off in a closed state.
+    // it needs to be closed before calling Reset
+    commandList->Close();
     commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get());
 
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     dx.commandList->ResourceBarrier(1, &barrier);
     dx.commandList->Close(); // done recording
 
@@ -366,7 +363,7 @@ void InitPipeline()
     FlushCommandQueue();
 }
 
-void Draw()
+void Render()
 {
     // We can only reset when the associated command lists have finished execution on the GPU.
     HR(dx.commandAllocator->Reset());
@@ -492,7 +489,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        Draw();
+        Render();
     }
 
     return 0;
