@@ -609,7 +609,7 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
     prebuildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     prebuildDesc.NumDescs = numInstance;
     prebuildDesc.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
-    
+
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
 
     // Building the acceleration structure (AS) requires some scratch space,
@@ -662,7 +662,7 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
 
     // Initialize the memory to zero on the first time only
     ZeroMemory(instanceDescs, instanceDescsSize);
-    
+
     // Create the description for each instance
     for (uint32_t i = 0; i < numInstance; i++)
     {
@@ -691,12 +691,12 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
     dx.commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
 
     // Wait for the builder to complete by setting a barrier on the resulting buffer.
-    D3D12_RESOURCE_BARRIER uavBarrier;
+    D3D12_RESOURCE_BARRIER uavBarrier = {};
     uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     uavBarrier.UAV.pResource = dxr.topLevelASBuffers.result.Get();
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     dx.commandList->ResourceBarrier(1, &uavBarrier);
-    
+
     dxr.topLevelASBuffers.scratch.Reset();
 }
 
@@ -760,7 +760,7 @@ void CreateBottomLevelAccelerationStructures2()
     build.Inputs.pGeometryDescs = geoDescArray;
     build.DestAccelerationStructureData = rsc.asDestBuffer->GetGPUVirtualAddress();
     build.ScratchAccelerationStructureData = asScratchBuffer->GetGPUVirtualAddress();
-    build.SourceAccelerationStructureData = 0;
+    build.SourceAccelerationStructureData = 0; //
     build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // not allow update
 
     // Build the AS
@@ -768,7 +768,7 @@ void CreateBottomLevelAccelerationStructures2()
 
     // Wait for the builder to complete.
     // This is particularly important as the construction of the top-level hierarchy is called right afterwards
-    D3D12_RESOURCE_BARRIER uavBarrier;
+    D3D12_RESOURCE_BARRIER uavBarrier = {};
     uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     uavBarrier.UAV.pResource = rsc.asDestBuffer.Get();
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -1031,7 +1031,7 @@ void CreateShaderBindingTable()
     // The pointer to the beginning of the heap is the only parameter required by shaders without root parameters
     D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle = dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart();
 
-    // The helper treats both root parameter pointers and heap pointers as void*, 
+    // The helper treats both root parameter pointers and heap pointers as void*,
     // while DX12 uses the D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers.
     // The pointer in this struct is a UINT64, which then has to be reinterpreted as a pointer.
     auto heapPointer = (UINT64*)(srvUavHeapHandle.ptr);
@@ -1053,13 +1053,13 @@ void CreateShaderBindingTable()
     // Create the SBT on the upload heap. This is required as the helper will use
     // mapping to write the SBT contents. After the SBT compilation it could be
     // copied to the default heap for performance.
-    dxr.sbtStorage = CreateBuffer(dx.device.Get(), 
+    dxr.sbtStorage = CreateBuffer(dx.device.Get(),
                                   sbtSize,
                                   D3D12_RESOURCE_FLAG_NONE,
                                   D3D12_RESOURCE_STATE_GENERIC_READ,
                                   CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
-    assert(!dxr.sbtStorage);
-    
+    assert(dxr.sbtStorage);
+
     // Compile the SBT from the shader and parameters info
     dxr.sbtHelper.Generate(dxr.sbtStorage.Get(), dxr.rtStateObjectProps.Get());
 }
