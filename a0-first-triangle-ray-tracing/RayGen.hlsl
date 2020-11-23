@@ -1,13 +1,33 @@
-#include "Common.hlsl"
+// Hit information, aka ray payload
+// This sample only carries a shading color and hit distance.
+// Note that the payload should be kept as small as possible,
+// and that its size must be declared in the corresponding
+// D3D12_RAYTRACING_SHADER_CONFIG pipeline subobjet.
+struct HitInfo
+{
+  float4 colorAndDistance;
+};
 
-// Raytracing output texture, accessed as a UAV
+// Attributes output by the raytracing when hitting a surface,
+// here the barycentric coordinates
+struct Attributes
+{
+  float2 bary;
+};
+
+struct STriVertex
+{
+  float3 vertex;
+  float4 color;
+};
+
 RWTexture2D<float4> gOutput : register(u0);
-
-// Raytracing acceleration structure, accessed as a SRV
 RaytracingAccelerationStructure SceneBVH : register(t0);
+StructuredBuffer<STriVertex> BTriVertex : register(t1);
 
 [shader("raygeneration")]
-void RayGen() {
+void RayGen()
+{
   // Initialize the ray payload
   HitInfo payload;
   payload.colorAndDistance = float4(0, 0, 0, 0);
@@ -78,4 +98,25 @@ void RayGen() {
       // between the hit/miss shaders and the raygen
       payload);
   gOutput[launchIndex] = float4(payload.colorAndDistance.rgb, 1.f);
+}
+
+[shader("miss")]
+void Miss(inout HitInfo payload : SV_RayPayload)
+{
+  uint2 launchIndex = DispatchRaysIndex().xy;
+  float2 dims = float2(DispatchRaysDimensions().xy);
+
+  float ramp = launchIndex.y / dims.y;
+  payload.colorAndDistance = float4(0.0f, 0.2f, 0.7f - 0.3f * ramp, -1.0f);
+}
+
+[shader("closesthit")]
+void ClosestHit(inout HitInfo payload, Attributes attrib)
+{
+  float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
+
+  uint vertId = 3 * PrimitiveIndex();
+  float3 hitColor = float3(1, 1, 1) - barycentrics;
+
+  payload.colorAndDistance = float4(hitColor, RayTCurrent());
 }

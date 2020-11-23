@@ -36,7 +36,7 @@ IDxcBlob* CompileShaderLibrary2(LPCWSTR fileName)
     // Compile
     IDxcOperationResult* pResult = nullptr;
     HR(dxcCompiler->Compile(pTextBlob,
-                            fileName, 
+                            fileName,
                             L"",
                             L"lib_6_3",
                             nullptr, 0, nullptr, 0,
@@ -44,7 +44,6 @@ IDxcBlob* CompileShaderLibrary2(LPCWSTR fileName)
                             &pResult));
 
     // Verify the result
-
     HR(pResult->GetStatus(&hr));
     if (FAILED(hr))
     {
