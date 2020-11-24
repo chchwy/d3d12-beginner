@@ -2,7 +2,6 @@
 #include "pch.h"
 #include "debug.h"
 #include "shader.h"
-#include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "dxcompiler.lib")
@@ -87,6 +86,19 @@ struct ASInstance
     UINT hitGroupIndex = 0;
 };
 
+struct ShaderBindingTable
+{
+    ID3D12Resource* resource;
+    UINT64 rayGenStartAddress = 0;
+    UINT   rayGenSectionSize = 0;
+    UINT64 missStartAddress = 0;
+    UINT   missSectionSize = 0;
+    UINT   missStride = 0;
+    UINT64 hitGroupStartAddress = 0;
+    UINT   hitGroupSectionSize = 0;
+    UINT   hitGroupStride = 0;
+};
+
 struct DXR
 {
     ComPtr<ID3D12Resource> bottomLevelAS; // Storage for the bottom Level AS
@@ -104,8 +116,8 @@ struct DXR
     ComPtr<ID3D12Resource> outputResource;
     ComPtr<ID3D12DescriptorHeap> srvUavHeap;
 
-    nv_helpers_dx12::ShaderBindingTableGenerator sbtHelper;
     ComPtr<ID3D12Resource> sbtStorage;
+    ShaderBindingTable sbt;
 };
 
 DX12 dx;
@@ -515,35 +527,16 @@ void Draw()
         // Setup the ray-tracing task
         D3D12_DISPATCH_RAYS_DESC desc = {};
 
-        // The layout of the SBT is as follows: ray generation shader, miss
-        // shaders, hit groups. As described in the CreateShaderBindingTable method,
-        // all SBT entries of a given type have the same size to allow a fixed
-        // stride.
-        // The ray generation shaders are always at the beginning of the SBT.
-        uint32_t rayGenerationSectionSizeInBytes = dxr.sbtHelper.GetRayGenSectionSize();
-        desc.RayGenerationShaderRecord.StartAddress = dxr.sbtStorage->GetGPUVirtualAddress();
-        desc.RayGenerationShaderRecord.SizeInBytes = rayGenerationSectionSizeInBytes;
+        desc.RayGenerationShaderRecord.StartAddress = dxr.sbt.rayGenStartAddress;
+        desc.RayGenerationShaderRecord.SizeInBytes = dxr.sbt.rayGenSectionSize;
 
-        // The miss shaders are in the second SBT section, right after the ray
-        // generation shader. We have one miss shader for the camera rays and one
-        // for the shadow rays, so this section has a size of 2*m_sbtEntrySize. We
-        // also indicate the stride between the two miss shaders, which is the size
-        // of a SBT entry
-        uint32_t missSectionSizeInBytes = dxr.sbtHelper.GetMissSectionSize();
-        desc.MissShaderTable.StartAddress =
-            dxr.sbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
-        desc.MissShaderTable.SizeInBytes = missSectionSizeInBytes;
-        desc.MissShaderTable.StrideInBytes = dxr.sbtHelper.GetMissEntrySize();
+        desc.MissShaderTable.StartAddress = dxr.sbt.missStartAddress;
+        desc.MissShaderTable.SizeInBytes = dxr.sbt.missSectionSize;
+        desc.MissShaderTable.StrideInBytes = dxr.sbt.missStride;
 
-        // The hit groups section start after the miss shaders. In this sample we
-        // have one 1 hit group for the triangle
-        uint32_t hitGroupsSectionSize = dxr.sbtHelper.GetHitGroupSectionSize();
-        desc.HitGroupTable.StartAddress = dxr.sbtStorage->GetGPUVirtualAddress()
-            + rayGenerationSectionSizeInBytes
-            + missSectionSizeInBytes;
-
-        desc.HitGroupTable.SizeInBytes = hitGroupsSectionSize;
-        desc.HitGroupTable.StrideInBytes = dxr.sbtHelper.GetHitGroupEntrySize();
+        desc.HitGroupTable.StartAddress = dxr.sbt.hitGroupStartAddress;
+        desc.HitGroupTable.SizeInBytes = dxr.sbt.hitGroupSectionSize;
+        desc.HitGroupTable.StrideInBytes = dxr.sbt.hitGroupStride;
 
         // Dimensions of the image to render, identical to a kernel launch dimension
         desc.Width = CLIENT_WIDTH;
@@ -629,8 +622,7 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
     dxr.topLevelASBuffers.result = CreateBuffer(
-        dx.device.Get(),
-        resultSize,
+        dx.device.Get(), resultSize,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
         D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
@@ -1020,11 +1012,12 @@ void CreateHeapAndDescriptors()
     srvDesc2.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle2(baseAddress, 2, dx.cbvSrvUavDescSize);
-    dx.device->CreateShaderResourceView(nullptr, &srvDesc2, srvHandle2);
+    dx.device->CreateShaderResourceView(rsc.vertexBuffer.Get(), &srvDesc2, srvHandle2);
 }
 
 void CreateShaderBindingTable()
 {
+    /*
     dxr.sbtHelper.Reset();
 
     dxr.sbtHelper.AddRayGenerationProgram(L"RayGen", {});
@@ -1043,6 +1036,89 @@ void CreateShaderBindingTable()
 
     // Compile the SBT from the shader and parameters info
     dxr.sbtHelper.Generate(dxr.sbtStorage.Get(), dxr.rtStateObjectProps.Get());
+    */
+    const UINT shaderIdSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+    const UINT shaderRecordAlignment = D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+
+    const UINT numRayGen = 1;
+    const UINT numRayGenParameters = 0;
+    const UINT numMiss = 1;
+    const UINT numMissParameters = 0;
+    const UINT numHitGroup = 1;
+    const UINT numHitGroupParameters = 0;
+
+    // A ShaderRecord is made of a shader ID and a set of parameters, taking 8 bytes each.
+    const UINT rayGenRecordSize = ROUND_UP(shaderIdSize + 8 * numRayGenParameters, shaderRecordAlignment);
+    const UINT missRecordSize = ROUND_UP(shaderIdSize + 8 * numMissParameters, shaderRecordAlignment);
+    const UINT hitGroupRecordSize = ROUND_UP(shaderIdSize + 8 * numHitGroupParameters, shaderRecordAlignment);
+
+    const UINT rayGenSectionSize = ROUND_UP(numRayGen * rayGenRecordSize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+    const UINT missSectionSize = ROUND_UP(numMiss * missRecordSize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+    const UINT hitGroupSectionSize = ROUND_UP(numHitGroup * hitGroupRecordSize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+
+    const UINT tableSize = ROUND_UP(rayGenSectionSize +
+                                    missSectionSize +
+                                    hitGroupSectionSize, 256);
+
+    auto stateProperties = dxr.rtStateObjectProps.Get();
+
+    std::vector<UINT8> tableData;
+    tableData.resize(tableSize);
+
+    UINT8* data = tableData.data();
+    for (int i = 0; i < numRayGen; ++i)
+    {
+        const void* shaderId = stateProperties->GetShaderIdentifier(L"RayGen");
+        memcpy(data, shaderId, sizeof(shaderId));
+
+        data += rayGenRecordSize;
+    }
+
+    data = tableData.data() + rayGenSectionSize;
+
+    for (int i = 0; i < numMiss; ++i)
+    {
+        const void* shaderId = stateProperties->GetShaderIdentifier(L"Miss");
+        memcpy(data, shaderId, sizeof(shaderId));
+
+        data += missRecordSize;
+    }
+
+    data = tableData.data() + rayGenSectionSize + missSectionSize;
+
+    for (int i = 0; i < numHitGroup; ++i)
+    {
+        const void* shaderId = stateProperties->GetShaderIdentifier(L"HitGroup");
+        memcpy(data, shaderId, sizeof(shaderId));
+
+        data += hitGroupRecordSize;
+    }
+
+    dxr.sbtStorage = CreateBuffer(dx.device.Get(),
+                                  tableSize,
+                                  D3D12_RESOURCE_FLAG_NONE,
+                                  D3D12_RESOURCE_STATE_GENERIC_READ,
+                                  CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
+
+    UINT8* pGpuData = nullptr;
+    HRESULT hr = dxr.sbtStorage->Map(0, nullptr, reinterpret_cast<void**>(&pGpuData));
+    if (FAILED(hr))
+    {
+        throw std::logic_error("Could not map the shader binding table");
+    }
+    memcpy(pGpuData, tableData.data(), tableData.size());
+    dxr.sbtStorage->Unmap(0, nullptr);
+
+    dxr.sbt.resource = dxr.sbtStorage.Get();
+    dxr.sbt.rayGenStartAddress = dxr.sbtStorage->GetGPUVirtualAddress();
+    dxr.sbt.rayGenSectionSize = rayGenSectionSize;
+    dxr.sbt.missStartAddress = dxr.sbtStorage->GetGPUVirtualAddress() + rayGenSectionSize;
+    dxr.sbt.missSectionSize = missSectionSize;
+    dxr.sbt.missStride = missRecordSize;
+    dxr.sbt.hitGroupStartAddress = dxr.sbtStorage->GetGPUVirtualAddress() + rayGenSectionSize + missSectionSize;
+    dxr.sbt.hitGroupSectionSize = hitGroupSectionSize;
+    dxr.sbt.hitGroupStride = hitGroupRecordSize;
+
 }
 
 void InitDXR()
@@ -1119,7 +1195,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
         hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
                                winClass.lpszClassName,
-                               L"02. Draw the first Triangle",
+                               L"a0. Ray Tracing Triangle",
                                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                CW_USEDEFAULT, CW_USEDEFAULT,
                                initialWidth,
