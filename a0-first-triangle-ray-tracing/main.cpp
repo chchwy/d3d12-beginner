@@ -42,17 +42,14 @@ struct DX12
     ComPtr<ID3D12CommandAllocator> commandAllocator;
     ComPtr<IDXGISwapChain> swapChain;
 
-    ComPtr<ID3D12RootSignature> rootSignature;
-    ComPtr<ID3D12PipelineState> pipelineState;
-
     ComPtr<ID3D12DescriptorHeap> rtvHeap;
     ComPtr<ID3D12DescriptorHeap> dsvHeap;
 
     ComPtr<ID3D12Resource> swapChainBuffers[2];
     ComPtr<ID3D12Resource> depthStencilBuffer;
 
-    D3D12_VIEWPORT viewport;
-    D3D12_RECT scissorRect;
+    D3D12_VIEWPORT viewport = {};
+    D3D12_RECT scissorRect = {};
 
     int width = 0;
     int height = 0;
@@ -66,8 +63,6 @@ struct DX12
 struct Geometry
 {
     ComPtr<ID3D12Resource> vertexBuffer;
-    D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
-
     ComPtr<ID3D12Resource> asDestBuffer;
 };
 
@@ -106,7 +101,7 @@ struct DXR
 
     std::vector<ASInstance> instances;
 
-    ComPtr<IDxcBlob> rayGenLibrary;
+    ComPtr<IDxcBlob> rayTracingShaderLib;
     ComPtr<ID3D12RootSignature> rayGenSignature;
     ComPtr<ID3D12RootSignature> globalSignature;
 
@@ -122,10 +117,9 @@ struct DXR
 
 DX12 dx;
 DXR dxr;
-Geometry rsc;
+Geometry triangle;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
-bool raster = true;
 
 inline ID3D12Resource* CreateBuffer(ID3D12Device* device,
                                     uint64_t size,
@@ -245,8 +239,6 @@ void InitD3D(HWND hwnd)
     dx.device = device;
     dx.fence = fence;
 
-    dx.cbvSrvUavDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
     // MSAA
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels;
     msaaQualityLevels.Format = BACK_BUFFER_FORMAT;
@@ -268,6 +260,14 @@ void InitD3D(HWND hwnd)
 
     dx.commandQueue = commandQueue;
     dx.commandAllocator = commandAllocator;
+
+    // Create the command list
+    ID3D12GraphicsCommandList4* commandList;
+    HR(dx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dx.commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList)));
+    dx.commandList = commandList;
+
+    // Command list needs to be closed before calling Reset
+    dx.commandList->Close();
 
     // Create SwapChain
     DXGI_SWAP_CHAIN_DESC sd = {};
@@ -293,6 +293,10 @@ void InitD3D(HWND hwnd)
 
     dx.swapChain = swapChain;
 
+    dx.rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    dx.dsvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    dx.cbvSrvUavDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
     // Create Descriptor Heaps
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc;
     rtvDesc.NumDescriptors = NUM_BACK_BUFFER;
@@ -301,16 +305,12 @@ void InitD3D(HWND hwnd)
     rtvDesc.NodeMask = 0;
     HR(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&dx.rtvHeap)));
 
-    dx.rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
     D3D12_DESCRIPTOR_HEAP_DESC dsvDesc;
     dsvDesc.NumDescriptors = 1;
     dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
     dsvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     dsvDesc.NodeMask = 0;
     HR(device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&dx.dsvHeap)));
-
-    dx.dsvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
     // Create RTV for each back buffer
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHeapHandle(dx.rtvHeap->GetCPUDescriptorHandleForHeapStart());
@@ -348,7 +348,7 @@ void InitD3D(HWND hwnd)
     HR(dx.device->CreateCommittedResource(&heapProp,
                                           D3D12_HEAP_FLAG_NONE,
                                           &d,
-                                          D3D12_RESOURCE_STATE_COMMON,
+                                          D3D12_RESOURCE_STATE_DEPTH_WRITE,
                                           &c,
                                           IID_PPV_ARGS(&depthStencilBuffer)));
 
@@ -367,56 +367,8 @@ void InitD3D(HWND hwnd)
     dx.scissorRect = { 0, 0, dx.width, dx.height };
 }
 
-void InitPipeline()
+void InitVertexBuffer()
 {
-    // Create an empty root signature.
-    CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-    rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-    ComPtr<ID3DBlob> signature;
-    ComPtr<ID3DBlob> error;
-    HR(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
-    HR(dx.device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&dx.rootSignature)));
-
-    // Create the pipeline state, which includes compiling and loading shaders.
-    {
-        ComPtr<ID3DBlob> vertexShader;
-        ComPtr<ID3DBlob> pixelShader;
-
-        UINT compileFlags = (ENABLE_DEBUG_LAYER) ? (D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION) : 0;
-        HR(D3DCompileFromFile(L"shaders.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr));
-        HR(D3DCompileFromFile(L"shaders.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr));
-
-        // Define the vertex input layout.
-        D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
-        {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-        };
-
-        // Describe and create the graphics pipeline state object (PSO).
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
-        psoDesc.pRootSignature = dx.rootSignature.Get();
-        psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShader.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShader.Get());
-        psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-        psoDesc.DepthStencilState.DepthEnable = FALSE;
-        psoDesc.DepthStencilState.StencilEnable = FALSE;
-        psoDesc.SampleMask = UINT_MAX;
-        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        psoDesc.NumRenderTargets = 1;
-        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        psoDesc.SampleDesc.Count = 1;
-        HR(dx.device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&dx.pipelineState)));
-    }
-
-    // Create the command list
-    ID3D12GraphicsCommandList4* commandList;
-    HR(dx.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, dx.commandAllocator.Get(), dx.pipelineState.Get(), IID_PPV_ARGS(&commandList)));
-    dx.commandList = commandList;
-
     // Create the vertex buffer.
     {
         // Define the geometry for a triangle.
@@ -429,50 +381,26 @@ void InitPipeline()
 
         const UINT vertexBufferSize = sizeof(triangleVertices);
 
-        // Note: using upload heaps to transfer static data like vertex buffers is not recommended.
-        // Every time the GPU needs it, the upload heap will be marshalled over.
-        // Please read up on Default Heap usage.
         // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
-        CD3DX12_HEAP_PROPERTIES heapProperties(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
 
-        HR(dx.device->CreateCommittedResource(
-            &heapProperties,
-            D3D12_HEAP_FLAG_NONE,
-            &bufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, // init state
-            nullptr, // init value
-            IID_PPV_ARGS(&rsc.vertexBuffer)));
+        CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
+        CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_UPLOAD);
+        HR(dx.device->CreateCommittedResource(&heapProp,
+                                              D3D12_HEAP_FLAG_NONE,
+                                              &bufferDesc,
+                                              D3D12_RESOURCE_STATE_GENERIC_READ, // init state
+                                              nullptr, // init value
+                                              IID_PPV_ARGS(&triangle.vertexBuffer)));
 
         // Copy the triangle data to the vertex buffer.
         UINT8* data = 0;
         CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
-        HR(rsc.vertexBuffer->Map(0, &readRange, (void**)&data));
+        HR(triangle.vertexBuffer->Map(0, &readRange, (void**)&data));
         {
             memcpy(data, triangleVertices, vertexBufferSize);
         }
-        rsc.vertexBuffer->Unmap(0, nullptr);
-
-        // Initialize the vertex buffer view.
-        rsc.vertexBufferView.BufferLocation = rsc.vertexBuffer->GetGPUVirtualAddress();
-        rsc.vertexBufferView.StrideInBytes = sizeof(Vertex);
-        rsc.vertexBufferView.SizeInBytes = vertexBufferSize;
+        triangle.vertexBuffer->Unmap(0, nullptr);
     }
-
-    // Command list needs to be closed before calling Reset
-    commandList->Close();
-
-    // Resource barrier for depth stencil buffer
-    commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get());
-
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(dx.depthStencilBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    dx.commandList->ResourceBarrier(1, &barrier);
-    dx.commandList->Close(); // done recording
-
-    ID3D12CommandList* cmdLists[] = { dx.commandList.Get() };
-    dx.commandQueue->ExecuteCommandLists(1, cmdLists);
-
-    FlushCommandQueue();
 }
 
 void Draw()
@@ -482,10 +410,10 @@ void Draw()
 
     // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
     // Reusing the command list reuses memory.
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 
     // This needs to be reset whenever the command list is reset.
-    dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
+    //dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
     dx.commandList->RSSetViewports(1, &dx.viewport);
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
 
@@ -494,19 +422,6 @@ void Draw()
     // Specify the buffers we are going to render to.
     dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
-    if (raster)
-    {
-        // Clear back buffer & depth stencil buffer
-        const float clearColor[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
-        dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), clearColor, 0, nullptr);
-        dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-
-        // Draw the triangle
-        dx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        dx.commandList->IASetVertexBuffers(0, 1, &rsc.vertexBufferView);
-        dx.commandList->DrawInstanced(3, 1, 0, 0);
-    }
-    else
     {
         // Bind the descriptor heap giving access to the top-level acceleration structure, as well as the ray-tracing output
         std::vector<ID3D12DescriptorHeap*> heaps = { dxr.srvUavHeap.Get() };
@@ -697,7 +612,7 @@ void CreateBottomLevelAccelerationStructures2()
     const UINT vertexSizeInBytes = sizeof(Vertex);
     const UINT vertexCount = 3;
 
-    ID3D12Resource* vertexBuffer = rsc.vertexBuffer.Get();
+    ID3D12Resource* vertexBuffer = triangle.vertexBuffer.Get();
 
     D3D12_RAYTRACING_GEOMETRY_DESC geoDescArray[1];
     geoDescArray[0] = {};
@@ -736,7 +651,7 @@ void CreateBottomLevelAccelerationStructures2()
                                    D3D12_RESOURCE_STATE_COMMON,
                                    CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
-    rsc.asDestBuffer = CreateBuffer(dx.device.Get(),
+    triangle.asDestBuffer = CreateBuffer(dx.device.Get(),
                                     asDestBufferSize,
                                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                                     D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
@@ -748,7 +663,7 @@ void CreateBottomLevelAccelerationStructures2()
     build.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     build.Inputs.NumDescs = ARRAYSIZE(geoDescArray);
     build.Inputs.pGeometryDescs = geoDescArray;
-    build.DestAccelerationStructureData = rsc.asDestBuffer->GetGPUVirtualAddress();
+    build.DestAccelerationStructureData = triangle.asDestBuffer->GetGPUVirtualAddress();
     build.ScratchAccelerationStructureData = asScratchBuffer->GetGPUVirtualAddress();
     build.SourceAccelerationStructureData = 0; //
     build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // not allow update
@@ -760,7 +675,7 @@ void CreateBottomLevelAccelerationStructures2()
     // This is particularly important as the construction of the top-level hierarchy is called right afterwards
     D3D12_RESOURCE_BARRIER uavBarrier = {};
     uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uavBarrier.UAV.pResource = rsc.asDestBuffer.Get();
+    uavBarrier.UAV.pResource = triangle.asDestBuffer.Get();
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     dx.commandList->ResourceBarrier(1, &uavBarrier);
 
@@ -774,7 +689,7 @@ void CreateAccelerationStructures()
     CreateBottomLevelAccelerationStructures2();
 
     // Just one instance for now
-    dxr.instances.push_back({ rsc.asDestBuffer, XMMatrixIdentity(), 0, 0 });
+    dxr.instances.push_back({ triangle.asDestBuffer, XMMatrixIdentity(), 0, 0 });
     CreateTopLevelAccelerationStructures2(dxr.instances);
 
     // Flush the command list and wait for it to finish
@@ -785,7 +700,7 @@ void CreateAccelerationStructures()
     FlushCommandQueue();
 
     // Once the command list is finished executing, reset it to be reused for rendering
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get()));
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 }
 
 ComPtr<ID3D12RootSignature>
@@ -808,25 +723,6 @@ CreateRootSignature(const D3D12_ROOT_SIGNATURE_DESC& desc)
 
 ComPtr<ID3D12RootSignature> CreateRayGenSignature()
 {
-    /*
-    D3D12_DESCRIPTOR_RANGE range[2];
-    range[0].BaseShaderRegister = 0; // u0
-    range[0].NumDescriptors = 1;
-    range[0].RegisterSpace = 0;
-    range[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    range[0].OffsetInDescriptorsFromTableStart = 0;
-
-    range[1].BaseShaderRegister = 0; // t0
-    range[1].NumDescriptors = 1;
-    range[1].RegisterSpace = 0;
-    range[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range[1].OffsetInDescriptorsFromTableStart = 1;
-
-    D3D12_ROOT_PARAMETER param = {};
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    param.DescriptorTable.NumDescriptorRanges = ARRAYSIZE(range);
-    param.DescriptorTable.pDescriptorRanges = range;
-    */
     D3D12_ROOT_SIGNATURE_DESC desc = {};
     desc.NumParameters = 0;
     desc.pParameters = nullptr;
@@ -834,26 +730,6 @@ ComPtr<ID3D12RootSignature> CreateRayGenSignature()
 
     ComPtr<ID3D12RootSignature> rootSig = CreateRootSignature(desc);
     return rootSig;
-}
-
-ComPtr<ID3D12RootSignature> CreateMissSignature()
-{
-    CD3DX12_ROOT_SIGNATURE_DESC d(0, nullptr);
-    d.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
-    return CreateRootSignature(d);
-}
-
-ComPtr<ID3D12RootSignature> CreateHitSignature()
-{
-    D3D12_ROOT_PARAMETER param[1];
-    param[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    param[0].Descriptor.ShaderRegister = 0;
-    param[0].Descriptor.RegisterSpace = 0;
-    param[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    CD3DX12_ROOT_SIGNATURE_DESC d(1, param);
-    d.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
-    return CreateRootSignature(d);
 }
 
 void CreateRTGlobalRootSignature()
@@ -897,7 +773,7 @@ void CreateRayTracingShaderAndSignatures()
 {
     CreateRTGlobalRootSignature();
 
-    dxr.rayGenLibrary = CompileShaderLibrary2(L"RayGen.hlsl");
+    dxr.rayTracingShaderLib = CompileShaderLibrary2(L"RayGen.hlsl");
     dxr.rayGenSignature = CreateRayGenSignature();
 }
 
@@ -906,7 +782,7 @@ void CreateRaytracingPipeline()
     CD3DX12_STATE_OBJECT_DESC psoDesc(D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE);
 
     // 1. DXIL libraries
-    CD3DX12_SHADER_BYTECODE rayGenByteCode(dxr.rayGenLibrary->GetBufferPointer(), dxr.rayGenLibrary->GetBufferSize());
+    CD3DX12_SHADER_BYTECODE rayGenByteCode(dxr.rayTracingShaderLib->GetBufferPointer(), dxr.rayTracingShaderLib->GetBufferSize());
     auto rayGenLib = psoDesc.CreateSubobject<CD3DX12_DXIL_LIBRARY_SUBOBJECT>();
     rayGenLib->SetDXILLibrary(&rayGenByteCode);
     rayGenLib->DefineExport(L"RayGen");
@@ -977,7 +853,7 @@ void CreateRaytracingOutputBuffer()
         IID_PPV_ARGS(&dxr.outputResource)));
 }
 
-void CreateHeapAndDescriptors()
+void CreateRtHeapAndDescriptors()
 {
     // Create a SRV/UAV/CBV descriptor heap. We need 2 entries
     // 1 UAV for the ray-tracing output and 1 SRV for the TLAS
@@ -1012,31 +888,11 @@ void CreateHeapAndDescriptors()
     srvDesc2.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle2(baseAddress, 2, dx.cbvSrvUavDescSize);
-    dx.device->CreateShaderResourceView(rsc.vertexBuffer.Get(), &srvDesc2, srvHandle2);
+    dx.device->CreateShaderResourceView(triangle.vertexBuffer.Get(), &srvDesc2, srvHandle2);
 }
 
 void CreateShaderBindingTable()
 {
-    /*
-    dxr.sbtHelper.Reset();
-
-    dxr.sbtHelper.AddRayGenerationProgram(L"RayGen", {});
-    dxr.sbtHelper.AddMissProgram(L"Miss", {});
-    dxr.sbtHelper.AddHitGroup(L"HitGroup", {});
-
-    // Compute the size of the SBT given the number of shaders and their parameters
-    uint32_t sbtSize = dxr.sbtHelper.ComputeSBTSize();
-
-    dxr.sbtStorage = CreateBuffer(dx.device.Get(),
-                                  sbtSize,
-                                  D3D12_RESOURCE_FLAG_NONE,
-                                  D3D12_RESOURCE_STATE_GENERIC_READ,
-                                  CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
-    assert(dxr.sbtStorage);
-
-    // Compile the SBT from the shader and parameters info
-    dxr.sbtHelper.Generate(dxr.sbtStorage.Get(), dxr.rtStateObjectProps.Get());
-    */
     const UINT shaderIdSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
     const UINT shaderRecordAlignment = D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
 
@@ -1056,9 +912,7 @@ void CreateShaderBindingTable()
     const UINT missSectionSize = ROUND_UP(numMiss * missRecordSize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
     const UINT hitGroupSectionSize = ROUND_UP(numHitGroup * hitGroupRecordSize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
 
-    const UINT tableSize = ROUND_UP(rayGenSectionSize +
-                                    missSectionSize +
-                                    hitGroupSectionSize, 256);
+    const UINT tableSize = rayGenSectionSize + missSectionSize + hitGroupSectionSize;
 
     auto stateProperties = dxr.rtStateObjectProps.Get();
 
@@ -1118,12 +972,11 @@ void CreateShaderBindingTable()
     dxr.sbt.hitGroupStartAddress = dxr.sbtStorage->GetGPUVirtualAddress() + rayGenSectionSize + missSectionSize;
     dxr.sbt.hitGroupSectionSize = hitGroupSectionSize;
     dxr.sbt.hitGroupStride = hitGroupRecordSize;
-
 }
 
 void InitDXR()
 {
-    dx.commandList->Reset(dx.commandAllocator.Get(), dx.pipelineState.Get());
+    dx.commandList->Reset(dx.commandAllocator.Get(), nullptr);
 
     CheckRaytracingSupport(dx.device.Get());
     CreateAccelerationStructures();
@@ -1133,7 +986,7 @@ void InitDXR()
     CreateRayTracingShaderAndSignatures();
     CreateRaytracingPipeline();
     CreateRaytracingOutputBuffer();
-    CreateHeapAndDescriptors();
+    CreateRtHeapAndDescriptors();
     CreateShaderBindingTable();
 }
 
@@ -1141,7 +994,6 @@ void KeyDown(WPARAM wparam)
 {
     if (wparam == VK_SPACE)
     {
-        raster = !raster;
     }
 }
 
@@ -1210,7 +1062,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     }
 
     InitD3D(hwnd);
-    InitPipeline();
+    InitVertexBuffer();
     InitDXR();
 
     bool isRunning = true;
