@@ -420,7 +420,7 @@ void Draw()
     dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
     // Specify the buffers we are going to render to.
-    dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+    //dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
     {
         // Bind the descriptor heap giving access to the top-level acceleration structure, as well as the ray-tracing output
@@ -602,6 +602,14 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     dx.commandList->ResourceBarrier(1, &uavBarrier);
 
+    dx.commandList->Close();
+    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
+    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
+
+    FlushCommandQueue();
+
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
+
     dxr.topLevelASBuffers.scratch.Reset();
 }
 
@@ -679,6 +687,14 @@ void CreateBottomLevelAccelerationStructures2()
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     dx.commandList->ResourceBarrier(1, &uavBarrier);
 
+    dx.commandList->Close();
+    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
+    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
+
+    FlushCommandQueue();
+
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
+
     asScratchBuffer.Reset();
 }
 
@@ -691,16 +707,6 @@ void CreateAccelerationStructures()
     // Just one instance for now
     dxr.instances.push_back({ triangle.asDestBuffer, XMMatrixIdentity(), 0, 0 });
     CreateTopLevelAccelerationStructures2(dxr.instances);
-
-    // Flush the command list and wait for it to finish
-    dx.commandList->Close();
-    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
-    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
-
-    FlushCommandQueue();
-
-    // Once the command list is finished executing, reset it to be reused for rendering
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 }
 
 ComPtr<ID3D12RootSignature>
@@ -981,13 +987,13 @@ void InitDXR()
     CheckRaytracingSupport(dx.device.Get());
     CreateAccelerationStructures();
 
-    dx.commandList->Close();
-
     CreateRayTracingShaderAndSignatures();
     CreateRaytracingPipeline();
     CreateRaytracingOutputBuffer();
     CreateRtHeapAndDescriptors();
     CreateShaderBindingTable();
+
+    dx.commandList->Close();
 }
 
 void KeyDown(WPARAM wparam)
