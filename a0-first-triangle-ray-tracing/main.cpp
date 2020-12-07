@@ -63,7 +63,7 @@ struct DX12
 struct Geometry
 {
     ComPtr<ID3D12Resource> vertexBuffer;
-    ComPtr<ID3D12Resource> asDestBuffer;
+    UINT bufferSize = 0;
 };
 
 struct AccelerationStructureBuffers
@@ -75,7 +75,8 @@ struct AccelerationStructureBuffers
 
 struct ASInstance
 {
-    ComPtr<ID3D12Resource> bottomLevelAS;
+    ComPtr<ID3D12Resource> bottomLevelResult;
+    ComPtr<ID3D12Resource> bottomLevelScratch;
     DirectX::XMMATRIX transform;
     UINT instanceID = 0;
     UINT hitGroupIndex = 0;
@@ -96,7 +97,6 @@ struct ShaderBindingTable
 
 struct DXR
 {
-    ComPtr<ID3D12Resource> bottomLevelAS; // Storage for the bottom Level AS
     AccelerationStructureBuffers topLevelASBuffers;
 
     std::vector<ASInstance> instances;
@@ -370,163 +370,92 @@ void InitD3D(HWND hwnd)
 void InitVertexBuffer()
 {
     // Create the vertex buffer.
+    Vertex triangleVertices[] =
     {
-        // Define the geometry for a triangle.
-        Vertex triangleVertices[] =
-        {
-            { XMFLOAT3(0.0f, 0.5f, 0.0f),   XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
-            { XMFLOAT3(0.5f, -0.5f, 0.0f),  XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
-            { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
-        };
+        { XMFLOAT3(0.0f, 0.5f, 0.0f),   XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(0.5f, -0.5f, 0.0f),  XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
+    };
 
-        const UINT vertexBufferSize = sizeof(triangleVertices);
+    const UINT vertexBufferSize = sizeof(triangleVertices);
 
-        // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
+    // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
 
-        CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
-        CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_UPLOAD);
-        HR(dx.device->CreateCommittedResource(&heapProp,
-                                              D3D12_HEAP_FLAG_NONE,
-                                              &bufferDesc,
-                                              D3D12_RESOURCE_STATE_GENERIC_READ, // init state
-                                              nullptr, // init value
-                                              IID_PPV_ARGS(&triangle.vertexBuffer)));
+    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
+    CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_UPLOAD);
+    HR(dx.device->CreateCommittedResource(&heapProp,
+                                            D3D12_HEAP_FLAG_NONE,
+                                            &bufferDesc,
+                                            D3D12_RESOURCE_STATE_GENERIC_READ, // init state
+                                            nullptr, // init value
+                                            IID_PPV_ARGS(&triangle.vertexBuffer)));
 
-        // Copy the triangle data to the vertex buffer.
-        UINT8* data = 0;
-        CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
-        HR(triangle.vertexBuffer->Map(0, &readRange, (void**)&data));
-        {
-            memcpy(data, triangleVertices, vertexBufferSize);
-        }
-        triangle.vertexBuffer->Unmap(0, nullptr);
+    // Copy the triangle data to the vertex buffer.
+    UINT8* data = 0;
+    CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
+    HR(triangle.vertexBuffer->Map(0, &readRange, (void**)&data));
+    {
+        memcpy(data, triangleVertices, vertexBufferSize);
     }
+    triangle.vertexBuffer->Unmap(0, nullptr);
+    triangle.bufferSize = vertexBufferSize;
 }
 
-void Draw()
+INT frameNum = 0;
+
+void UpdateVertexBuffer()
 {
-    // We can only reset when the associated command lists have finished execution on the GPU.
-    HR(dx.commandAllocator->Reset());
-
-    // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
-    // Reusing the command list reuses memory.
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
-
-    // This needs to be reset whenever the command list is reset.
-    //dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
-    dx.commandList->RSSetViewports(1, &dx.viewport);
-    dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
-
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-
-    // Specify the buffers we are going to render to.
-    //dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
-
+    // Create the vertex buffer.
+    Vertex triangleVertices[] =
     {
-        // Bind the descriptor heap giving access to the top-level acceleration structure, as well as the ray-tracing output
-        std::vector<ID3D12DescriptorHeap*> heaps = { dxr.srvUavHeap.Get() };
-        dx.commandList->SetDescriptorHeaps(UINT(heaps.size()), heaps.data());
-        dx.commandList->SetComputeRootSignature(dxr.globalSignature.Get());
-        dx.commandList->SetComputeRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart(), 0, dx.cbvSrvUavDescSize));
-        //dx.commandList->SetComputeRootShaderResourceView(1, );
+        { XMFLOAT3(0.0f, 0.5f, 0.0f),   XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(0.5f, -0.5f, 0.0f),  XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
+        { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
+    };
 
-        // On the last frame, the ray-tracing output was used as a copy source, to
-        // copy its contents into the render target. Now we need to transition it to
-        // a UAV so that the shaders can write in it.
-        auto transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            dxr.outputResource.Get(),
-            D3D12_RESOURCE_STATE_COPY_SOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        dx.commandList->ResourceBarrier(1, &transition);
+    triangleVertices[0].position.x += (0.001 * frameNum);
+    triangleVertices[1].position.x += (0.001 * frameNum);
+    triangleVertices[2].position.x += (0.001 * frameNum);
 
-        // Setup the ray-tracing task
-        D3D12_DISPATCH_RAYS_DESC desc = {};
-
-        desc.RayGenerationShaderRecord.StartAddress = dxr.sbt.rayGenStartAddress;
-        desc.RayGenerationShaderRecord.SizeInBytes = dxr.sbt.rayGenSectionSize;
-
-        desc.MissShaderTable.StartAddress = dxr.sbt.missStartAddress;
-        desc.MissShaderTable.SizeInBytes = dxr.sbt.missSectionSize;
-        desc.MissShaderTable.StrideInBytes = dxr.sbt.missStride;
-
-        desc.HitGroupTable.StartAddress = dxr.sbt.hitGroupStartAddress;
-        desc.HitGroupTable.SizeInBytes = dxr.sbt.hitGroupSectionSize;
-        desc.HitGroupTable.StrideInBytes = dxr.sbt.hitGroupStride;
-
-        // Dimensions of the image to render, identical to a kernel launch dimension
-        desc.Width = CLIENT_WIDTH;
-        desc.Height = CLIENT_HEIGHT;
-        desc.Depth = 1;
-
-        dx.commandList->SetPipelineState1(dxr.rtStateObject.Get());
-        dx.commandList->DispatchRays(&desc);
-
-        // The ray-tracing output needs to be copied to the actual render target used for display.
-        // For this, we need to transition the ray-tracing output from a UAV to a copy source,
-        // and the render target buffer to a copy destination.
-        // We can then do the actual copy, before transitioning the render target buffer into a render target,
-        // that will be then used to display the image
-        transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            dxr.outputResource.Get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_COPY_SOURCE);
-        dx.commandList->ResourceBarrier(1, &transition);
-
-        transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_COPY_DEST);
-        dx.commandList->ResourceBarrier(1, &transition);
-
-        dx.commandList->CopyResource(CurrentBackBuffer(), dxr.outputResource.Get());
-
-        transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            CurrentBackBuffer(),
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        dx.commandList->ResourceBarrier(1, &transition);
+    // Copy the triangle data to the vertex buffer.
+    UINT8* data = 0;
+    CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
+    HR(triangle.vertexBuffer->Map(0, &readRange, (void**)&data));
+    {
+        memcpy(data, triangleVertices, triangle.bufferSize);
     }
-
-    // Indicate a state transition on the resource usage.
-    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
-
-    HR(dx.commandList->Close()); // Done recording commands.
-
-    // Execute command list
-    ID3D12CommandList* cmdsLists[] = { dx.commandList.Get() };
-    dx.commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
-
-    HR(dx.swapChain->Present(0, 0));
-    currBackBuffer = (currBackBuffer + 1) % NUM_BACK_BUFFER;
-
-    // Wait until frame commands are complete.
-    // This waiting is inefficient and is done for simplicity.
-    // Later we will show how to organize our rendering code so we do not have to wait per frame.
-    FlushCommandQueue();
+    triangle.vertexBuffer->Unmap(0, nullptr);
 }
 
-// Create the main acceleration structure that holds
-void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instances)
+void CreateTopLevelAccelerationStructures(const std::vector<ASInstance>& instances)
 {
     const UINT numInstance = UINT(instances.size());
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS prebuildDesc = {};
     prebuildDesc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
     prebuildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     prebuildDesc.NumDescs = numInstance;
-    prebuildDesc.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    prebuildDesc.Flags = buildFlags;
 
+    // Building the acceleration structure (AS) requires some scratch space, as well as space to store the resulting structure
+    // This function computes a conservative estimate of the memory requirements for both based on the number of bottom-level instances.
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
-
-    // Building the acceleration structure (AS) requires some scratch space,
-    // as well as space to store the resulting structure
-    // This function computes a conservative estimate of the memory requirements for both,
-    // based on the number of bottom-level instances.
     dx.device->GetRaytracingAccelerationStructurePrebuildInfo(&prebuildDesc, &info);
 
     const UINT64 scratchSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     const UINT64 resultSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT64 updateSize = ROUND_UP(info.UpdateScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     const UINT64 instanceDescsSize = ROUND_UP(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * UINT64(numInstance), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+
+    std::stringstream sout;
+    sout << "TLAS Scratch Size=" << scratchSize << " bytes\n"
+         << "TLAS Update Size=" << updateSize << " bytes\n"
+         << "TLAS Dest Size=" << resultSize << " bytes\n";
+    OutputDebugStringA(sout.str().c_str());
 
     // Create the scratch and result buffers. Since the build is all done on GPU,
     // those can be allocated on the default heap
@@ -574,7 +503,7 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
         instanceDescs[i].InstanceID = instances[i].instanceID; //visible in the shader in InstanceID()
         instanceDescs[i].InstanceContributionToHitGroupIndex = instances[i].hitGroupIndex; // Index of the hit group invoked upon intersection
         instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE; // Instance flags, including backface culling, winding etc.
-        instanceDescs[i].AccelerationStructure = instances[i].bottomLevelAS->GetGPUVirtualAddress(); // Get access to the bottom level
+        instanceDescs[i].AccelerationStructure = instances[i].bottomLevelResult->GetGPUVirtualAddress(); // Get access to the bottom level
         instanceDescs[i].InstanceMask = 0xFF; // Visibility mask, always visible here
 
         DirectX::XMMATRIX m = XMMatrixTranspose(instances[i].transform); // GLM is column major, the INSTANCE_DESC is row major
@@ -590,7 +519,7 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
     buildDesc.DestAccelerationStructureData = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
     buildDesc.ScratchAccelerationStructureData = dxr.topLevelASBuffers.scratch->GetGPUVirtualAddress();
     buildDesc.SourceAccelerationStructureData = 0;
-    buildDesc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    buildDesc.Inputs.Flags = buildFlags;
 
     // Build the top-level AS
     dx.commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
@@ -609,14 +538,11 @@ void CreateTopLevelAccelerationStructures2(const std::vector<ASInstance>& instan
     FlushCommandQueue();
 
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
-
-    dxr.topLevelASBuffers.scratch.Reset();
 }
 
-void CreateBottomLevelAccelerationStructures2()
+ASInstance CreateBottomLevelAccelerationStructures()
 {
     // Vertex buffer & index buffer
-    const UINT vertexOffsetInBytes = 0;
     const UINT vertexSizeInBytes = sizeof(Vertex);
     const UINT vertexCount = 3;
 
@@ -625,7 +551,7 @@ void CreateBottomLevelAccelerationStructures2()
     D3D12_RAYTRACING_GEOMETRY_DESC geoDescArray[1];
     geoDescArray[0] = {};
     geoDescArray[0].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    geoDescArray[0].Triangles.VertexBuffer.StartAddress = vertexBuffer->GetGPUVirtualAddress() + vertexOffsetInBytes;
+    geoDescArray[0].Triangles.VertexBuffer.StartAddress = vertexBuffer->GetGPUVirtualAddress();
     geoDescArray[0].Triangles.VertexBuffer.StrideInBytes = vertexSizeInBytes;
     geoDescArray[0].Triangles.VertexCount = vertexCount;
     geoDescArray[0].Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
@@ -637,10 +563,14 @@ void CreateBottomLevelAccelerationStructures2()
 
     static_assert(ARRAYSIZE(geoDescArray) == 1, "One geometry!");
 
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+
     // Compute the size of scratch buffer and resulting buffer.
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
     inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // must match the flags of build Desc
+    inputs.Flags = buildFlags;
     inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     inputs.NumDescs = ARRAYSIZE(geoDescArray);
     inputs.pGeometryDescs = geoDescArray;
@@ -648,22 +578,30 @@ void CreateBottomLevelAccelerationStructures2()
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
     dx.device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
 
-    const UINT asScratchBufferSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-    const UINT asDestBufferSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT scratchBufferSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT destBufferSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT updateBufferSize = ROUND_UP(info.UpdateScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+
+    std::stringstream sout;
+    sout << "BLAS Scratch Size=" << scratchBufferSize << " bytes\n"
+         << "BLAS Update Size=" << updateBufferSize << " bytes\n"
+         << "BLAS Dest Size=" << destBufferSize << " bytes\n";
+    OutputDebugStringA(sout.str().c_str());
 
     // Create buffers based on the previously computed size
-    ComPtr<ID3D12Resource> asScratchBuffer;
-    asScratchBuffer = CreateBuffer(dx.device.Get(),
-                                   asScratchBufferSize,
-                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                   D3D12_RESOURCE_STATE_COMMON,
-                                   CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
+    ComPtr<ID3D12Resource> scratchBuffer;
+    ComPtr<ID3D12Resource> destBuffer;
+    scratchBuffer = CreateBuffer(dx.device.Get(),
+                                 scratchBufferSize,
+                                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                 D3D12_RESOURCE_STATE_COMMON,
+                                 CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
-    triangle.asDestBuffer = CreateBuffer(dx.device.Get(),
-                                    asDestBufferSize,
-                                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                                    D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-                                    CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
+    destBuffer = CreateBuffer(dx.device.Get(),
+                              destBufferSize,
+                              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                              D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+                              CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT));
 
     // Fill the bottom level AS build desc
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build;
@@ -671,10 +609,10 @@ void CreateBottomLevelAccelerationStructures2()
     build.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     build.Inputs.NumDescs = ARRAYSIZE(geoDescArray);
     build.Inputs.pGeometryDescs = geoDescArray;
-    build.DestAccelerationStructureData = triangle.asDestBuffer->GetGPUVirtualAddress();
-    build.ScratchAccelerationStructureData = asScratchBuffer->GetGPUVirtualAddress();
-    build.SourceAccelerationStructureData = 0; //
-    build.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE; // not allow update
+    build.DestAccelerationStructureData = destBuffer->GetGPUVirtualAddress();
+    build.ScratchAccelerationStructureData = scratchBuffer->GetGPUVirtualAddress();
+    build.SourceAccelerationStructureData = 0;
+    build.Inputs.Flags = buildFlags;
 
     // Build the AS
     dx.commandList->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
@@ -683,30 +621,155 @@ void CreateBottomLevelAccelerationStructures2()
     // This is particularly important as the construction of the top-level hierarchy is called right afterwards
     D3D12_RESOURCE_BARRIER uavBarrier = {};
     uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uavBarrier.UAV.pResource = triangle.asDestBuffer.Get();
+    uavBarrier.UAV.pResource = destBuffer.Get();
     uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     dx.commandList->ResourceBarrier(1, &uavBarrier);
 
-    dx.commandList->Close();
-    ID3D12CommandList* ppCommandLists[] = { dx.commandList.Get() };
-    dx.commandQueue->ExecuteCommandLists(1, ppCommandLists);
-
-    FlushCommandQueue();
-
-    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
-
-    asScratchBuffer.Reset();
+    ASInstance ins;
+    ins.bottomLevelResult = destBuffer;
+    ins.bottomLevelScratch = scratchBuffer;
+    ins.hitGroupIndex = 0;
+    ins.instanceID = 0;
+    ins.transform = XMMatrixIdentity();
+    return ins;
 }
 
-// Create all acceleration structures, bottom and top
+void UpdateBottomLevelAccelerationStructures(ASInstance& ins)
+{
+    // Vertex buffer & index buffer
+    const UINT vertexSizeInBytes = sizeof(Vertex);
+    const UINT vertexCount = 3;
+
+    ID3D12Resource* vertexBuffer = triangle.vertexBuffer.Get();
+
+    D3D12_RAYTRACING_GEOMETRY_DESC geoDescArray[1];
+    geoDescArray[0] = {};
+    geoDescArray[0].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+    geoDescArray[0].Triangles.VertexBuffer.StartAddress = vertexBuffer->GetGPUVirtualAddress();
+    geoDescArray[0].Triangles.VertexBuffer.StrideInBytes = vertexSizeInBytes;
+    geoDescArray[0].Triangles.VertexCount = vertexCount;
+    geoDescArray[0].Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+    geoDescArray[0].Triangles.IndexBuffer = 0;
+    geoDescArray[0].Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
+    geoDescArray[0].Triangles.IndexCount = 0;
+    geoDescArray[0].Triangles.Transform3x4 = 0;
+    geoDescArray[0].Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+    static_assert(ARRAYSIZE(geoDescArray) == 1, "One geometry!");
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+    // Fill the bottom level AS build desc
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build;
+    build.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    build.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    build.Inputs.NumDescs = ARRAYSIZE(geoDescArray);
+    build.Inputs.pGeometryDescs = geoDescArray;
+    build.DestAccelerationStructureData = ins.bottomLevelResult->GetGPUVirtualAddress();
+    build.ScratchAccelerationStructureData = ins.bottomLevelScratch->GetGPUVirtualAddress();
+    build.SourceAccelerationStructureData = ins.bottomLevelResult->GetGPUVirtualAddress();
+    build.Inputs.Flags = buildFlags;
+
+    // Build the AS
+    dx.commandList->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
+
+    // Wait for the builder to complete.
+    // This is particularly important as the construction of the top-level hierarchy is called right afterwards
+    D3D12_RESOURCE_BARRIER uavBarrier = {};
+    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uavBarrier.UAV.pResource = ins.bottomLevelResult.Get();
+    uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    dx.commandList->ResourceBarrier(1, &uavBarrier);
+
+    //OutputDebugStringA("Updated!\n");
+}
+
+// Create the main acceleration structure that holds
+void UpdateTopLevelAccelerationStructures(const std::vector<ASInstance>& instances)
+{
+    const UINT numInstance = instances.size();
+    const UINT instanceDescsSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * numInstance;
+
+    ComPtr<ID3D12Resource> instanceBuffer = dxr.topLevelASBuffers.instanceDesc;
+
+    // Copy the descriptors in the target descriptor buffer
+    D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs;
+    instanceBuffer->Map(0, nullptr, (void**)(&instanceDescs));
+    if (!instanceDescs)
+    {
+        throw std::logic_error("Cannot map the instance descriptor buffer - is it in the upload heap?");
+    }
+
+    // Initialize the memory to zero on the first time only
+    ZeroMemory(instanceDescs, instanceDescsSize);
+
+    // Create the description for each instance
+    for (uint32_t i = 0; i < numInstance; i++)
+    {
+        instanceDescs[i].InstanceID = instances[i].instanceID; //visible in the shader in InstanceID()
+        instanceDescs[i].InstanceContributionToHitGroupIndex = instances[i].hitGroupIndex; // Index of the hit group invoked upon intersection
+        instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE; // Instance flags, including backface culling, winding etc.
+        instanceDescs[i].AccelerationStructure = instances[i].bottomLevelResult->GetGPUVirtualAddress(); // Get access to the bottom level
+        instanceDescs[i].InstanceMask = 0xFF; // Visibility mask, always visible here
+
+        DirectX::XMMATRIX m = XMMatrixTranspose(instances[i].transform); // GLM is column major, the INSTANCE_DESC is row major
+        memcpy(instanceDescs[i].Transform, &m, sizeof(instanceDescs[i].Transform));
+    }
+    instanceBuffer->Unmap(0, nullptr);
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE |
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+    buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    buildDesc.Inputs.InstanceDescs = instanceBuffer->GetGPUVirtualAddress();
+    buildDesc.Inputs.NumDescs = numInstance;
+    buildDesc.DestAccelerationStructureData = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
+    buildDesc.ScratchAccelerationStructureData = dxr.topLevelASBuffers.scratch->GetGPUVirtualAddress();
+    buildDesc.SourceAccelerationStructureData = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
+    buildDesc.Inputs.Flags = buildFlags;
+
+    // Build the top-level AS
+    dx.commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+
+    // Wait for the builder to complete by setting a barrier on the resulting buffer.
+    D3D12_RESOURCE_BARRIER uavBarrier = {};
+    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uavBarrier.UAV.pResource = dxr.topLevelASBuffers.result.Get();
+    uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    dx.commandList->ResourceBarrier(1, &uavBarrier);
+}
+
 void CreateAccelerationStructures()
 {
     // Build the bottom AS from the Triangle vertex buffer
-    CreateBottomLevelAccelerationStructures2();
+    ASInstance instance = CreateBottomLevelAccelerationStructures();
 
     // Just one instance for now
-    dxr.instances.push_back({ triangle.asDestBuffer, XMMatrixIdentity(), 0, 0 });
-    CreateTopLevelAccelerationStructures2(dxr.instances);
+    dxr.instances.push_back(instance);
+    CreateTopLevelAccelerationStructures(dxr.instances);
+}
+
+void UpdateAccelerationStructures()
+{
+    for (auto& ins : dxr.instances)
+    {
+        UpdateBottomLevelAccelerationStructures(ins);
+    }
+
+    float scale = 1.0;
+    scale = ((frameNum + 1) * 0.002);
+    std::stringstream sout;
+    sout << "Scale=" << scale << ", FrameNum=" << frameNum << "\n";
+    OutputDebugStringA(sout.str().c_str());
+    dxr.instances[0].transform = DirectX::XMMatrixScaling(scale, scale, scale);
+    UpdateTopLevelAccelerationStructures(dxr.instances);
 }
 
 ComPtr<ID3D12RootSignature>
@@ -881,6 +944,7 @@ void CreateRtHeapAndDescriptors()
     srvDesc1.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc1.RaytracingAccelerationStructure.Location = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
 
+    // t0
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle1(baseAddress, 1, dx.cbvSrvUavDescSize);
     dx.device->CreateShaderResourceView(nullptr, &srvDesc1, srvHandle1);
 
@@ -996,6 +1060,119 @@ void InitDXR()
     dx.commandList->Close();
 }
 
+
+void Draw()
+{
+    // We can only reset when the associated command lists have finished execution on the GPU.
+    HR(dx.commandAllocator->Reset());
+
+    // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
+    // Reusing the command list reuses memory.
+    HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
+
+    frameNum++;
+    if (frameNum > 1000) frameNum = 0;
+    //UpdateVertexBuffer();
+    //UpdateAccelerationStructures();
+
+    // This needs to be reset whenever the command list is reset.
+    //dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
+    dx.commandList->RSSetViewports(1, &dx.viewport);
+    dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
+
+    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+    // Specify the buffers we are going to render to.
+    //dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
+
+    {
+        // Bind the descriptor heap giving access to the top-level acceleration structure, as well as the ray-tracing output
+        std::vector<ID3D12DescriptorHeap*> heaps = { dxr.srvUavHeap.Get() };
+        dx.commandList->SetDescriptorHeaps(UINT(heaps.size()), heaps.data());
+        dx.commandList->SetComputeRootSignature(dxr.globalSignature.Get());
+        dx.commandList->SetComputeRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart(), 0, dx.cbvSrvUavDescSize));
+        //dx.commandList->SetComputeRootShaderResourceView(1, );
+
+        // On the last frame, the ray-tracing output was used as a copy source, to
+        // copy its contents into the render target. Now we need to transition it to
+        // a UAV so that the shaders can write in it.
+        auto transition = CD3DX12_RESOURCE_BARRIER::Transition(
+            dxr.outputResource.Get(),
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        dx.commandList->ResourceBarrier(1, &transition);
+
+        // Setup the ray-tracing task
+        D3D12_DISPATCH_RAYS_DESC desc = {};
+
+        desc.RayGenerationShaderRecord.StartAddress = dxr.sbt.rayGenStartAddress;
+        desc.RayGenerationShaderRecord.SizeInBytes = dxr.sbt.rayGenSectionSize;
+
+        desc.MissShaderTable.StartAddress = dxr.sbt.missStartAddress;
+        desc.MissShaderTable.SizeInBytes = dxr.sbt.missSectionSize;
+        desc.MissShaderTable.StrideInBytes = dxr.sbt.missStride;
+
+        desc.HitGroupTable.StartAddress = dxr.sbt.hitGroupStartAddress;
+        desc.HitGroupTable.SizeInBytes = dxr.sbt.hitGroupSectionSize;
+        desc.HitGroupTable.StrideInBytes = dxr.sbt.hitGroupStride;
+
+        // Dimensions of the image to render, identical to a kernel launch dimension
+        desc.Width = CLIENT_WIDTH;
+        desc.Height = CLIENT_HEIGHT;
+        desc.Depth = 1;
+
+        dx.commandList->SetPipelineState1(dxr.rtStateObject.Get());
+        dx.commandList->DispatchRays(&desc);
+
+        // The ray-tracing output needs to be copied to the actual render target used for display.
+        // For this, we need to transition the ray-tracing output from a UAV to a copy source,
+        // and the render target buffer to a copy destination.
+        // We can then do the actual copy, before transitioning the render target buffer into a render target,
+        // that will be then used to display the image
+        transition = CD3DX12_RESOURCE_BARRIER::Transition(
+            dxr.outputResource.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        dx.commandList->ResourceBarrier(1, &transition);
+
+        transition = CD3DX12_RESOURCE_BARRIER::Transition(
+            CurrentBackBuffer(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        dx.commandList->ResourceBarrier(1, &transition);
+
+        dx.commandList->CopyResource(CurrentBackBuffer(), dxr.outputResource.Get());
+
+        transition = CD3DX12_RESOURCE_BARRIER::Transition(
+            CurrentBackBuffer(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        dx.commandList->ResourceBarrier(1, &transition);
+    }
+
+    // Indicate a state transition on the resource usage.
+    dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+
+    HR(dx.commandList->Close()); // Done recording commands.
+
+    // Execute command list
+    ID3D12CommandList* cmdsLists[] = { dx.commandList.Get() };
+    dx.commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+
+    HR(dx.swapChain->Present(0, 0));
+    currBackBuffer = (currBackBuffer + 1) % NUM_BACK_BUFFER;
+
+    // Wait until frame commands are complete.
+    // This waiting is inefficient and is done for simplicity.
+    // Later we will show how to organize our rendering code so we do not have to wait per frame.
+    FlushCommandQueue();
+}
+
+void Shutdown()
+{
+
+}
+
 void KeyDown(WPARAM wparam)
 {
     if (wparam == VK_SPACE)
@@ -1016,6 +1193,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     }
     case WM_DESTROY:
     {
+        Shutdown();
         PostQuitMessage(0);
         break;
     }
