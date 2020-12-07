@@ -401,9 +401,7 @@ void InitVertexBuffer()
     triangle.bufferSize = vertexBufferSize;
 }
 
-INT frameNum = 0;
-
-void UpdateVertexBuffer()
+void UpdateVertexBuffer(UINT64 frameNo)
 {
     // Create the vertex buffer.
     Vertex triangleVertices[] =
@@ -413,9 +411,11 @@ void UpdateVertexBuffer()
         { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
     };
 
-    triangleVertices[0].position.x += (0.001f * frameNum);
-    triangleVertices[1].position.x += (0.001f * frameNum);
-    triangleVertices[2].position.x += (0.001f * frameNum);
+    float offset = (frameNo % 1000) * 0.0005f - 0.5f;
+
+    triangleVertices[0].position.y += offset;
+    triangleVertices[1].position.x += offset;
+    triangleVertices[2].position.x -= offset;
 
     // Copy the triangle data to the vertex buffer.
     UINT8* data = 0;
@@ -425,6 +425,17 @@ void UpdateVertexBuffer()
         memcpy(data, triangleVertices, triangle.bufferSize);
     }
     triangle.vertexBuffer->Unmap(0, nullptr);
+}
+
+void UpdateInstanceTransform(UINT64 frameNo)
+{
+    /*float scale = 1.0;
+    scale = ((frameNo + 1) * 0.002f);
+    std::stringstream sout;
+    sout << "Scale=" << scale << ", FrameNum=" << frameNum << "\n";
+    OutputDebugStringA(sout.str().c_str());
+    dxr.instances[0].transform = DirectX::XMMatrixScaling(scale, scale, scale);*/
+
 }
 
 void CreateTopLevelAccelerationStructures(const std::vector<ASInstance>& instances)
@@ -756,19 +767,12 @@ void CreateAccelerationStructures()
     CreateTopLevelAccelerationStructures(dxr.instances);
 }
 
-void UpdateAccelerationStructures()
+void UpdateAccelerationStructures(UINT64 frameNo)
 {
     for (auto& ins : dxr.instances)
     {
         UpdateBottomLevelAccelerationStructures(ins);
     }
-
-    float scale = 1.0;
-    scale = ((frameNum + 1) * 0.002f);
-    std::stringstream sout;
-    sout << "Scale=" << scale << ", FrameNum=" << frameNum << "\n";
-    OutputDebugStringA(sout.str().c_str());
-    dxr.instances[0].transform = DirectX::XMMatrixScaling(scale, scale, scale);
     UpdateTopLevelAccelerationStructures(dxr.instances);
 }
 
@@ -1060,8 +1064,7 @@ void InitDXR()
     dx.commandList->Close();
 }
 
-
-void Draw()
+void Draw(UINT64 frameNo)
 {
     // We can only reset when the associated command lists have finished execution on the GPU.
     HR(dx.commandAllocator->Reset());
@@ -1070,10 +1073,9 @@ void Draw()
     // Reusing the command list reuses memory.
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 
-    frameNum++;
-    if (frameNum > 1000) frameNum = 0;
-    //UpdateVertexBuffer();
-    //UpdateAccelerationStructures();
+    UpdateVertexBuffer(frameNo);
+    UpdateInstanceTransform(frameNo);
+    UpdateAccelerationStructures(frameNo);
 
     // This needs to be reset whenever the command list is reset.
     //dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
@@ -1249,6 +1251,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     InitVertexBuffer();
     InitDXR();
 
+    UINT64 frameNo = 0;
+
     bool isRunning = true;
     while (isRunning)
     {
@@ -1262,7 +1266,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
-        Draw();
+        Draw(frameNo);
+
+        frameNo++;
     }
 
     return 0;
