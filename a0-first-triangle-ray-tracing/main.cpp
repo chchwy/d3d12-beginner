@@ -413,9 +413,9 @@ void UpdateVertexBuffer()
         { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
     };
 
-    triangleVertices[0].position.x += (0.001 * frameNum);
-    triangleVertices[1].position.x += (0.001 * frameNum);
-    triangleVertices[2].position.x += (0.001 * frameNum);
+    triangleVertices[0].position.x += (0.001f * frameNum);
+    triangleVertices[1].position.x += (0.001f * frameNum);
+    triangleVertices[2].position.x += (0.001f * frameNum);
 
     // Copy the triangle data to the vertex buffer.
     UINT8* data = 0;
@@ -690,7 +690,7 @@ void UpdateBottomLevelAccelerationStructures(ASInstance& ins)
 // Create the main acceleration structure that holds
 void UpdateTopLevelAccelerationStructures(const std::vector<ASInstance>& instances)
 {
-    const UINT numInstance = instances.size();
+    const UINT numInstance = UINT(instances.size());
     const UINT instanceDescsSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * numInstance;
 
     ComPtr<ID3D12Resource> instanceBuffer = dxr.topLevelASBuffers.instanceDesc;
@@ -764,7 +764,7 @@ void UpdateAccelerationStructures()
     }
 
     float scale = 1.0;
-    scale = ((frameNum + 1) * 0.002);
+    scale = ((frameNum + 1) * 0.002f);
     std::stringstream sout;
     sout << "Scale=" << scale << ", FrameNum=" << frameNum << "\n";
     OutputDebugStringA(sout.str().c_str());
