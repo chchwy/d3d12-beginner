@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(main) # set the project name
-add_executable(main main.cpp pch.h) # add the executable
+project(D3D12_00 VERSION 1.0 LANGUAGES CXX)
 
-target_precompile_headers(main PRIVATE pch.h)
+add_definitions(-DUNICODE -D_UNICODE)
+add_executable(D1212_00 WIN32 main.cpp pch.h)
+
+target_precompile_headers(D1212_00 PRIVATE pch.h)
+
