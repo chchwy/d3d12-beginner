@@ -52,14 +52,14 @@ struct DX12
     UINT cbvSrvUavDescSize = 0;
 };
 
-struct Resource
+struct Geometry
 {
     ComPtr<ID3D12Resource> vertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
 };
 
 DX12 dx;
-Resource rsc;
+Geometry geo;
 UINT currentFence = 0;
 UINT currBackBuffer = 0;
 
@@ -132,7 +132,10 @@ void InitD12(HWND hwnd)
     dx.device = device;
     dx.fence = fence;
 
+    // descriptor size
     dx.cbvSrvUavDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    dx.rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    dx.dsvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
     // MSAA
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels;
@@ -144,8 +147,8 @@ void InitD12(HWND hwnd)
     dx.msaaQuality = msaaQualityLevels.NumQualityLevels;
 
     // Create CommandQueue
-    ID3D12CommandQueue* commandQueue;
-    ID3D12CommandAllocator* commandAllocator;
+    ID3D12CommandQueue* commandQueue = nullptr;
+    ID3D12CommandAllocator* commandAllocator = nullptr;
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -176,7 +179,7 @@ void InitD12(HWND hwnd)
 
     IDXGISwapChain* swapChain = nullptr;
     // First parameter said it's a device, but in Dx12 you need to pass a CommandQueue
-    HR(dx.dxgiFactory->CreateSwapChain(dx.commandQueue.Get(), &sd, &swapChain));
+    HR(dxgiFactory->CreateSwapChain(dx.commandQueue.Get(), &sd, &swapChain));
 
     dx.swapChain = swapChain;
 
@@ -188,8 +191,6 @@ void InitD12(HWND hwnd)
     rtvDesc.NodeMask = 0;
     HR(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&dx.rtvHeap)));
 
-    dx.rtvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
     D3D12_DESCRIPTOR_HEAP_DESC dsvDesc;
     dsvDesc.NumDescriptors = 1;
     dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
@@ -197,15 +198,12 @@ void InitD12(HWND hwnd)
     dsvDesc.NodeMask = 0;
     HR(device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&dx.dsvHeap)));
 
-    dx.dsvDescSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-
     // Create RTV for each back buffer
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHeapHandle(dx.rtvHeap->GetCPUDescriptorHandleForHeapStart());
     for (int i = 0; i < NUM_BACK_BUFFER; ++i)
     {
         HR(dx.swapChain->GetBuffer(i, IID_PPV_ARGS(&dx.swapChainBuffers[i])));
-
-        dx.device->CreateRenderTargetView(dx.swapChainBuffers[i].Get(), nullptr, rtvHeapHandle);
+        device->CreateRenderTargetView(dx.swapChainBuffers[i].Get(), nullptr, rtvHeapHandle);
         rtvHeapHandle.Offset(1, dx.rtvDescSize);
     }
 
@@ -232,12 +230,12 @@ void InitD12(HWND hwnd)
 
     ID3D12Resource* depthStencilBuffer = nullptr;
     CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_DEFAULT);
-    HR(dx.device->CreateCommittedResource(&heapProp,
-                                          D3D12_HEAP_FLAG_NONE,
-                                          &d,
-                                          D3D12_RESOURCE_STATE_COMMON,
-                                          &c,
-                                          IID_PPV_ARGS(&depthStencilBuffer)));
+    HR(device->CreateCommittedResource(&heapProp,
+                                       D3D12_HEAP_FLAG_NONE,
+                                       &d,
+                                       D3D12_RESOURCE_STATE_COMMON,
+                                       &c,
+                                       IID_PPV_ARGS(&depthStencilBuffer)));
 
     dx.depthStencilBuffer = depthStencilBuffer;
 
@@ -324,21 +322,21 @@ void InitPipeline()
             &bufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, // init state
             nullptr, // init value
-            IID_PPV_ARGS(&rsc.vertexBuffer)));
+            IID_PPV_ARGS(&geo.vertexBuffer)));
 
         // Copy the triangle data to the vertex buffer.
         UINT8* data = 0;
         CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
-        HR(rsc.vertexBuffer->Map(0, &readRange, (void**)&data));
+        HR(geo.vertexBuffer->Map(0, &readRange, (void**)&data));
         {
             memcpy(data, triangleVertices, vertexBufferSize);
         }
-        rsc.vertexBuffer->Unmap(0, nullptr);
+        geo.vertexBuffer->Unmap(0, nullptr);
 
         // Initialize the vertex buffer view.
-        rsc.vertexBufferView.BufferLocation = rsc.vertexBuffer->GetGPUVirtualAddress();
-        rsc.vertexBufferView.StrideInBytes = sizeof(Vertex);
-        rsc.vertexBufferView.SizeInBytes = vertexBufferSize;
+        geo.vertexBufferView.BufferLocation = geo.vertexBuffer->GetGPUVirtualAddress();
+        geo.vertexBufferView.StrideInBytes = sizeof(Vertex);
+        geo.vertexBufferView.SizeInBytes = vertexBufferSize;
     }
 
     // Resource barrier for depth stencil buffer
@@ -381,14 +379,14 @@ void Render()
     // Clear back buffer & depth stencil buffer
     FLOAT red[]{ 67 / 255.f, 183 / 255.f, 194 / 255.f, 1.0f };
     dx.commandList->ClearRenderTargetView(CurrentBackBufferView(), red, 0, nullptr);
-    //dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+    dx.commandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
     // Specify the buffers we are going to render to.
     dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
 
     // Draw the triangle
     dx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx.commandList->IASetVertexBuffers(0, 1, &rsc.vertexBufferView);
+    dx.commandList->IASetVertexBuffers(0, 1, &geo.vertexBufferView);
     dx.commandList->DrawInstanced(3, 1, 0, 0);
 
     // Indicate a state transition on the resource usage.
