@@ -14,3 +14,6 @@ release
 
 */bin
 */obj
+out
+00-open-win32-window/build
+CMakeSettings.json
