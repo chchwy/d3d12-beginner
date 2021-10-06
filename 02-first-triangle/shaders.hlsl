@@ -18,7 +18,6 @@ struct Interpolator
 struct Output
 {
 	float4 rgba : SV_TARGET0;
-	float4 debug01 : SV_TARGET1;
 };
 
 Interpolator VSMain(float4 position : POSITION, float4 color : COLOR)
@@ -35,6 +34,5 @@ Output PSMain(Interpolator i) : SV_TARGET
 {
 	Output o;
 	o.rgba = i.color;
-	o.debug01 = i.position;
 	return o;
 }

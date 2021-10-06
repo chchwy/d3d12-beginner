@@ -12,6 +12,7 @@ const static UINT CLIENT_HEIGHT = 768;
 const static DXGI_FORMAT BACK_BUFFER_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 const static UINT NUM_BACK_BUFFER = 2;
 
+#define WINDOW_TITLE L"01. Initialize D3D12"
 #define ENABLE_DEBUG_LAYER
 
 struct DX12
@@ -33,8 +34,6 @@ struct DX12
     D3D12_VIEWPORT viewport;
     D3D12_RECT scissorRect;
 
-    int width = 0;
-    int height = 0;
     int msaaQuality = 0;
 
     UINT rtvDescSize = 0;
@@ -85,7 +84,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilView()
     return dx.dsvHeap->GetCPUDescriptorHandleForHeapStart();
 }
 
-void InitD3D(HWND hwnd)
+void InitD12(HWND hwnd)
 {
 #ifdef ENABLE_DEBUG_LAYER
     ID3D12Debug* debugController;
@@ -290,49 +289,58 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     return result;
 }
 
+HWND CreateMainWindow(HINSTANCE hInstance, int* errorCode)
+{
+    WNDCLASSEXW winClass = {};
+    winClass.cbSize = sizeof(WNDCLASSEXW);
+    winClass.style = CS_HREDRAW | CS_VREDRAW;
+    winClass.lpfnWndProc = &WndProc;
+    winClass.hInstance = hInstance;
+    winClass.hIcon = LoadIconW(0, IDI_APPLICATION);
+    winClass.hCursor = LoadCursorW(0, IDC_ARROW);
+    winClass.lpszClassName = L"MyWindowClass";
+    winClass.hIconSm = LoadIconW(0, IDI_APPLICATION);
+
+    if (!RegisterClassExW(&winClass))
+    {
+        MessageBoxA(0, "RegisterClassEx failed", "Fatal Error", MB_OK);
+        *errorCode = GetLastError();
+        return HWND();
+    }
+
+    RECT initialRect{ 0, 0, CLIENT_WIDTH, CLIENT_HEIGHT };
+    AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
+    LONG initialWidth = initialRect.right - initialRect.left;
+    LONG initialHeight = initialRect.bottom - initialRect.top;
+
+    HWND hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
+        winClass.lpszClassName,
+        WINDOW_TITLE,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        initialWidth,
+        initialHeight,
+        0, 0, hInstance, 0);
+
+    if (!hwnd)
+    {
+        MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
+        *errorCode = GetLastError();
+        return HWND();
+    }
+    return  hwnd;
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
     // Open a window
-    HWND hwnd;
-    {
-        WNDCLASSEXW winClass = {};
-        winClass.cbSize = sizeof(WNDCLASSEXW);
-        winClass.style = CS_HREDRAW | CS_VREDRAW;
-        winClass.lpfnWndProc = &WndProc;
-        winClass.hInstance = hInstance;
-        winClass.hIcon = LoadIconW(0, IDI_APPLICATION);
-        winClass.hCursor = LoadCursorW(0, IDC_ARROW);
-        winClass.lpszClassName = L"MyWindowClass";
-        winClass.hIconSm = LoadIconW(0, IDI_APPLICATION);
+    int errorCode = 0;
+    HWND hwnd = CreateMainWindow(hInstance, &errorCode);
 
-        if (!RegisterClassExW(&winClass))
-        {
-            MessageBoxA(0, "RegisterClassEx failed", "Fatal Error", MB_OK);
-            return GetLastError();
-        }
+    if (errorCode != 0)
+        return errorCode;
 
-        RECT initialRect = { 0, 0, 1024, 768 };
-        AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
-        LONG initialWidth = initialRect.right - initialRect.left;
-        LONG initialHeight = initialRect.bottom - initialRect.top;
-
-        hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
-                               winClass.lpszClassName,
-                               L"01. Initialize D3D12",
-                               WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                               CW_USEDEFAULT, CW_USEDEFAULT,
-                               initialWidth,
-                               initialHeight,
-                               0, 0, hInstance, 0);
-
-        if (!hwnd)
-        {
-            MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
-            return GetLastError();
-        }
-    }
-
-    InitD3D(hwnd);
+    InitD12(hwnd);
 
     bool isRunning = true;
     while (isRunning)
