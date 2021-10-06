@@ -61,7 +61,7 @@ struct Geometry
 DX12 dx;
 Geometry geo;
 UINT currentFence = 0;
-UINT currBackBuffer = 0;
+UINT currBackBufferIndex = 0;
 
 void FlushCommandQueue()
 {
@@ -85,14 +85,14 @@ void FlushCommandQueue()
 
 ID3D12Resource* CurrentBackBuffer()
 {
-    return dx.swapChainBuffers[currBackBuffer].Get();
+    return dx.swapChainBuffers[currBackBufferIndex].Get();
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE CurrentBackBufferView()
 {
     return CD3DX12_CPU_DESCRIPTOR_HANDLE(
         dx.rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-        currBackBuffer,
+        currBackBufferIndex,
         dx.rtvDescSize);
 }
 
@@ -207,7 +207,7 @@ void InitD12(HWND hwnd)
         rtvHeapHandle.Offset(1, dx.rtvDescSize);
     }
 
-    currBackBuffer = 0;
+    currBackBufferIndex = 0;
 
     // Depth Stencil Buffer
     D3D12_RESOURCE_DESC d;
@@ -399,7 +399,7 @@ void Render()
     dx.commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
     HR(dx.swapChain->Present(0, 0));
-    currBackBuffer = (currBackBuffer + 1) % NUM_BACK_BUFFER;
+    currBackBufferIndex = (currBackBufferIndex + 1) % NUM_BACK_BUFFER;
 
     // Wait until frame commands are complete.
     // This waiting is inefficient and is done for simplicity.
