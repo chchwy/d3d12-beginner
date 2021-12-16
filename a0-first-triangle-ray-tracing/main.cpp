@@ -19,7 +19,8 @@ const static UINT CLIENT_HEIGHT = 768;
 const static DXGI_FORMAT BACK_BUFFER_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 const static UINT NUM_BACK_BUFFER = 2;
 
-#define ENABLE_DEBUG_LAYER true
+#define WINDOW_TITLE L"a0. RayTracing First Triangle"
+#define ENABLE_DEBUG_LAYER
 
 #ifndef ROUND_UP
 #define ROUND_UP(v, powerOf2Alignment)                                         \
@@ -208,7 +209,7 @@ void CheckRaytracingSupport(ID3D12Device5* device)
     }
 }
 
-void InitD3D(HWND hwnd)
+void InitDX12(HWND hwnd)
 {
     dx.width = CLIENT_WIDTH;
     dx.height = CLIENT_HEIGHT;
@@ -250,15 +251,15 @@ void InitD3D(HWND hwnd)
 
     // Create CommandQueue
     ID3D12CommandQueue* commandQueue;
-    ID3D12CommandAllocator* commandAllocator;
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     HR(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
-    HR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator)));
-
     dx.commandQueue = commandQueue;
+
+    ID3D12CommandAllocator* commandAllocator;
+    HR(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator)));
     dx.commandAllocator = commandAllocator;
 
     // Create the command list
@@ -288,7 +289,7 @@ void InitD3D(HWND hwnd)
     sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
     IDXGISwapChain* swapChain = nullptr;
-    // First parameter said it's a device, but in Dx12 you need to pass a CommandQueue
+    // First parameter said it's a device, but in Dx12 you need actually a CommandQueue
     HR(dx.dxgiFactory->CreateSwapChain(dx.commandQueue.Get(), &sd, &swapChain));
 
     dx.swapChain = swapChain;
@@ -384,11 +385,11 @@ void InitVertexBuffer()
     CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
     CD3DX12_HEAP_PROPERTIES heapProp(D3D12_HEAP_TYPE_UPLOAD);
     HR(dx.device->CreateCommittedResource(&heapProp,
-                                            D3D12_HEAP_FLAG_NONE,
-                                            &bufferDesc,
-                                            D3D12_RESOURCE_STATE_GENERIC_READ, // init state
-                                            nullptr, // init value
-                                            IID_PPV_ARGS(&triangle.vertexBuffer)));
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, // init state
+        nullptr, // init value
+        IID_PPV_ARGS(&triangle.vertexBuffer)));
 
     // Copy the triangle data to the vertex buffer.
     UINT8* data = 0;
@@ -399,43 +400,6 @@ void InitVertexBuffer()
     }
     triangle.vertexBuffer->Unmap(0, nullptr);
     triangle.bufferSize = vertexBufferSize;
-}
-
-void UpdateVertexBuffer(UINT64 frameNo)
-{
-    // Create the vertex buffer.
-    Vertex triangleVertices[] =
-    {
-        { XMFLOAT3(0.0f, 0.5f, 0.0f),   XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) },
-        { XMFLOAT3(0.5f, -0.5f, 0.0f),  XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) },
-        { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }
-    };
-
-    float offset = (frameNo % 1000) * 0.0005f - 0.5f;
-
-    triangleVertices[0].position.y += offset;
-    triangleVertices[1].position.x += offset;
-    triangleVertices[2].position.x -= offset;
-
-    // Copy the triangle data to the vertex buffer.
-    UINT8* data = 0;
-    CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
-    HR(triangle.vertexBuffer->Map(0, &readRange, (void**)&data));
-    {
-        memcpy(data, triangleVertices, triangle.bufferSize);
-    }
-    triangle.vertexBuffer->Unmap(0, nullptr);
-}
-
-void UpdateInstanceTransform(UINT64 frameNo)
-{
-    /*float scale = 1.0;
-    scale = ((frameNo + 1) * 0.002f);
-    std::stringstream sout;
-    sout << "Scale=" << scale << ", FrameNum=" << frameNum << "\n";
-    OutputDebugStringA(sout.str().c_str());
-    dxr.instances[0].transform = DirectX::XMMatrixScaling(scale, scale, scale);*/
-
 }
 
 void CreateTopLevelAccelerationStructures(const std::vector<ASInstance>& instances)
@@ -457,10 +421,10 @@ void CreateTopLevelAccelerationStructures(const std::vector<ASInstance>& instanc
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
     dx.device->GetRaytracingAccelerationStructurePrebuildInfo(&prebuildDesc, &info);
 
-    const UINT64 scratchSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-    const UINT64 resultSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-    const UINT64 updateSize = ROUND_UP(info.UpdateScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-    const UINT64 instanceDescsSize = ROUND_UP(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * UINT64(numInstance), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    const UINT64 scratchSize = ROUND_UP(info.ScratchDataSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+    const UINT64 resultSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+    const UINT64 updateSize = ROUND_UP(info.UpdateScratchDataSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+    const UINT64 instanceDescsSize = ROUND_UP(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * UINT64(numInstance), D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
 
     std::stringstream sout;
     sout << "TLAS Scratch Size=" << scratchSize << " bytes\n"
@@ -593,12 +557,6 @@ ASInstance CreateBottomLevelAccelerationStructures()
     const UINT destBufferSize = ROUND_UP(info.ResultDataMaxSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
     const UINT updateBufferSize = ROUND_UP(info.UpdateScratchDataSizeInBytes, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
-    std::stringstream sout;
-    sout << "BLAS Scratch Size=" << scratchBufferSize << " bytes\n"
-         << "BLAS Update Size=" << updateBufferSize << " bytes\n"
-         << "BLAS Dest Size=" << destBufferSize << " bytes\n";
-    OutputDebugStringA(sout.str().c_str());
-
     // Create buffers based on the previously computed size
     ComPtr<ID3D12Resource> scratchBuffer;
     ComPtr<ID3D12Resource> destBuffer;
@@ -645,118 +603,6 @@ ASInstance CreateBottomLevelAccelerationStructures()
     return ins;
 }
 
-void UpdateBottomLevelAccelerationStructures(ASInstance& ins)
-{
-    // Vertex buffer & index buffer
-    const UINT vertexSizeInBytes = sizeof(Vertex);
-    const UINT vertexCount = 3;
-
-    ID3D12Resource* vertexBuffer = triangle.vertexBuffer.Get();
-
-    D3D12_RAYTRACING_GEOMETRY_DESC geoDescArray[1];
-    geoDescArray[0] = {};
-    geoDescArray[0].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    geoDescArray[0].Triangles.VertexBuffer.StartAddress = vertexBuffer->GetGPUVirtualAddress();
-    geoDescArray[0].Triangles.VertexBuffer.StrideInBytes = vertexSizeInBytes;
-    geoDescArray[0].Triangles.VertexCount = vertexCount;
-    geoDescArray[0].Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-    geoDescArray[0].Triangles.IndexBuffer = 0;
-    geoDescArray[0].Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
-    geoDescArray[0].Triangles.IndexCount = 0;
-    geoDescArray[0].Triangles.Transform3x4 = 0;
-    geoDescArray[0].Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-
-    static_assert(ARRAYSIZE(geoDescArray) == 1, "One geometry!");
-
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE |
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
-
-    // Fill the bottom level AS build desc
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build;
-    build.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    build.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    build.Inputs.NumDescs = ARRAYSIZE(geoDescArray);
-    build.Inputs.pGeometryDescs = geoDescArray;
-    build.DestAccelerationStructureData = ins.bottomLevelResult->GetGPUVirtualAddress();
-    build.ScratchAccelerationStructureData = ins.bottomLevelScratch->GetGPUVirtualAddress();
-    build.SourceAccelerationStructureData = ins.bottomLevelResult->GetGPUVirtualAddress();
-    build.Inputs.Flags = buildFlags;
-
-    // Build the AS
-    dx.commandList->BuildRaytracingAccelerationStructure(&build, 0, nullptr);
-
-    // Wait for the builder to complete.
-    // This is particularly important as the construction of the top-level hierarchy is called right afterwards
-    D3D12_RESOURCE_BARRIER uavBarrier = {};
-    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uavBarrier.UAV.pResource = ins.bottomLevelResult.Get();
-    uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    dx.commandList->ResourceBarrier(1, &uavBarrier);
-
-    //OutputDebugStringA("Updated!\n");
-}
-
-// Create the main acceleration structure that holds
-void UpdateTopLevelAccelerationStructures(const std::vector<ASInstance>& instances)
-{
-    const UINT numInstance = UINT(instances.size());
-    const UINT instanceDescsSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * numInstance;
-
-    ComPtr<ID3D12Resource> instanceBuffer = dxr.topLevelASBuffers.instanceDesc;
-
-    // Copy the descriptors in the target descriptor buffer
-    D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs;
-    instanceBuffer->Map(0, nullptr, (void**)(&instanceDescs));
-    if (!instanceDescs)
-    {
-        throw std::logic_error("Cannot map the instance descriptor buffer - is it in the upload heap?");
-    }
-
-    // Initialize the memory to zero on the first time only
-    ZeroMemory(instanceDescs, instanceDescsSize);
-
-    // Create the description for each instance
-    for (uint32_t i = 0; i < numInstance; i++)
-    {
-        instanceDescs[i].InstanceID = instances[i].instanceID; //visible in the shader in InstanceID()
-        instanceDescs[i].InstanceContributionToHitGroupIndex = instances[i].hitGroupIndex; // Index of the hit group invoked upon intersection
-        instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE; // Instance flags, including backface culling, winding etc.
-        instanceDescs[i].AccelerationStructure = instances[i].bottomLevelResult->GetGPUVirtualAddress(); // Get access to the bottom level
-        instanceDescs[i].InstanceMask = 0xFF; // Visibility mask, always visible here
-
-        DirectX::XMMATRIX m = XMMatrixTranspose(instances[i].transform); // GLM is column major, the INSTANCE_DESC is row major
-        memcpy(instanceDescs[i].Transform, &m, sizeof(instanceDescs[i].Transform));
-    }
-    instanceBuffer->Unmap(0, nullptr);
-
-    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE |
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
-
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
-    buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-    buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    buildDesc.Inputs.InstanceDescs = instanceBuffer->GetGPUVirtualAddress();
-    buildDesc.Inputs.NumDescs = numInstance;
-    buildDesc.DestAccelerationStructureData = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
-    buildDesc.ScratchAccelerationStructureData = dxr.topLevelASBuffers.scratch->GetGPUVirtualAddress();
-    buildDesc.SourceAccelerationStructureData = dxr.topLevelASBuffers.result->GetGPUVirtualAddress();
-    buildDesc.Inputs.Flags = buildFlags;
-
-    // Build the top-level AS
-    dx.commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-
-    // Wait for the builder to complete by setting a barrier on the resulting buffer.
-    D3D12_RESOURCE_BARRIER uavBarrier = {};
-    uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    uavBarrier.UAV.pResource = dxr.topLevelASBuffers.result.Get();
-    uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    dx.commandList->ResourceBarrier(1, &uavBarrier);
-}
-
 void CreateAccelerationStructures()
 {
     // Build the bottom AS from the Triangle vertex buffer
@@ -765,15 +611,6 @@ void CreateAccelerationStructures()
     // Just one instance for now
     dxr.instances.push_back(instance);
     CreateTopLevelAccelerationStructures(dxr.instances);
-}
-
-void UpdateAccelerationStructures(UINT64 frameNo)
-{
-    for (auto& ins : dxr.instances)
-    {
-        UpdateBottomLevelAccelerationStructures(ins);
-    }
-    UpdateTopLevelAccelerationStructures(dxr.instances);
 }
 
 ComPtr<ID3D12RootSignature>
@@ -1029,7 +866,7 @@ void CreateShaderBindingTable()
                                   CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD));
 
     UINT8* pGpuData = nullptr;
-    HRESULT hr = dxr.sbtStorage->Map(0, nullptr, reinterpret_cast<void**>(&pGpuData));
+    HRESULT hr = dxr.sbtStorage->Map(0, nullptr, (void**)&pGpuData);
     if (FAILED(hr))
     {
         throw std::logic_error("Could not map the shader binding table");
@@ -1073,20 +910,11 @@ void Draw(UINT64 frameNo)
     // Reusing the command list reuses memory.
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 
-    UpdateVertexBuffer(frameNo);
-    UpdateInstanceTransform(frameNo);
-    UpdateAccelerationStructures(frameNo);
-
     // This needs to be reset whenever the command list is reset.
-    //dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
     dx.commandList->RSSetViewports(1, &dx.viewport);
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
 
     dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-
-    // Specify the buffers we are going to render to.
-    //dx.commandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, &DepthStencilView());
-
     {
         // Bind the descriptor heap giving access to the top-level acceleration structure, as well as the ray-tracing output
         std::vector<ID3D12DescriptorHeap*> heaps = { dxr.srvUavHeap.Get() };
@@ -1205,49 +1033,58 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     return result;
 }
 
+HWND CreateMainWindow(HINSTANCE hInstance, int* errorCode)
+{
+    WNDCLASSEXW winClass = {};
+    winClass.cbSize = sizeof(WNDCLASSEXW);
+    winClass.style = CS_HREDRAW | CS_VREDRAW;
+    winClass.lpfnWndProc = &WndProc;
+    winClass.hInstance = hInstance;
+    winClass.hIcon = LoadIconW(0, IDI_APPLICATION);
+    winClass.hCursor = LoadCursorW(0, IDC_ARROW);
+    winClass.lpszClassName = L"MyWindowClass";
+    winClass.hIconSm = LoadIconW(0, IDI_APPLICATION);
+
+    if (!RegisterClassExW(&winClass))
+    {
+        MessageBoxA(0, "RegisterClassEx failed", "Fatal Error", MB_OK);
+        *errorCode = GetLastError();
+        return HWND();
+    }
+
+    RECT initialRect{ 0, 0, CLIENT_WIDTH, CLIENT_HEIGHT };
+    AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
+    LONG initialWidth = initialRect.right - initialRect.left;
+    LONG initialHeight = initialRect.bottom - initialRect.top;
+
+    HWND hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
+        winClass.lpszClassName,
+        WINDOW_TITLE,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        initialWidth,
+        initialHeight,
+        0, 0, hInstance, 0);
+
+    if (!hwnd)
+    {
+        MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
+        *errorCode = GetLastError();
+        return HWND();
+    }
+    return  hwnd;
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
     // Open a window
-    HWND hwnd;
-    {
-        WNDCLASSEXW winClass = {};
-        winClass.cbSize = sizeof(WNDCLASSEXW);
-        winClass.style = CS_HREDRAW | CS_VREDRAW;
-        winClass.lpfnWndProc = &WndProc;
-        winClass.hInstance = hInstance;
-        winClass.hIcon = LoadIconW(0, IDI_APPLICATION);
-        winClass.hCursor = LoadCursorW(0, IDC_ARROW);
-        winClass.lpszClassName = L"MyWindowClass";
-        winClass.hIconSm = LoadIconW(0, IDI_APPLICATION);
+    int errorCode = 0;
+    HWND hwnd = CreateMainWindow(hInstance, &errorCode);
 
-        if (!RegisterClassExW(&winClass))
-        {
-            MessageBoxA(0, "RegisterClassEx failed", "Fatal Error", MB_OK);
-            return GetLastError();
-        }
+    if (errorCode != 0)
+        return errorCode;
 
-        RECT initialRect = { 0, 0, CLIENT_WIDTH, CLIENT_HEIGHT };
-        AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, WS_EX_OVERLAPPEDWINDOW);
-        LONG initialWidth = initialRect.right - initialRect.left;
-        LONG initialHeight = initialRect.bottom - initialRect.top;
-
-        hwnd = CreateWindowExW(WS_EX_OVERLAPPEDWINDOW,
-                               winClass.lpszClassName,
-                               L"a0. Ray Tracing Triangle",
-                               WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                               CW_USEDEFAULT, CW_USEDEFAULT,
-                               initialWidth,
-                               initialHeight,
-                               0, 0, hInstance, 0);
-
-        if (!hwnd)
-        {
-            MessageBoxA(0, "CreateWindowEx failed", "Fatal Error", MB_OK);
-            return GetLastError();
-        }
-    }
-
-    InitD3D(hwnd);
+    InitDX12(hwnd);
     InitVertexBuffer();
     InitDXR();
 
@@ -1267,7 +1104,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
             DispatchMessageW(&message);
         }
         Draw(frameNo);
-
         frameNo++;
     }
 

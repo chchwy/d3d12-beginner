@@ -67,8 +67,8 @@ void FlushCommandQueue()
 {
     currentFence += 1;
 
-    // Add an instruction to the command queue to set a new fence point.  Because we
-    // are on the GPU timeline, the new fence point won't be set until the GPU finishes
+    // Add an instruction to the command queue to set a new fence point.
+    // Because we are on the GPU timeline, the new fence point won't be set until the GPU finishes
     // processing all the commands prior to this Signal().
     HR(dx.commandQueue->Signal(dx.fence.Get(), currentFence));
 
