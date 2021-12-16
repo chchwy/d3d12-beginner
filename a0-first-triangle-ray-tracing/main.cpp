@@ -765,8 +765,8 @@ void CreateRaytracingOutputBuffer()
 
 void CreateRtHeapAndDescriptors()
 {
-    // Create a SRV/UAV/CBV descriptor heap. We need 2 entries
-    // 1 UAV for the ray-tracing output and 1 SRV for the TLAS
+    // Create a SRV/UAV/CBV descriptor heap.
+    // We need 2 entries, 1 UAV for the ray-tracing output and 1 SRV for the TLAS
     dxr.srvUavHeap = CreateDescriptorHeap(3);
 
     auto baseAddress = dxr.srvUavHeap->GetCPUDescriptorHandleForHeapStart();
@@ -903,11 +903,7 @@ void InitDXR()
 
 void Draw(UINT64 frameNo)
 {
-    // We can only reset when the associated command lists have finished execution on the GPU.
     HR(dx.commandAllocator->Reset());
-
-    // A command list can be reset after it has been added to the command queue via ExecuteCommandList.
-    // Reusing the command list reuses memory.
     HR(dx.commandList->Reset(dx.commandAllocator.Get(), nullptr));
 
     // This needs to be reset whenever the command list is reset.
@@ -921,11 +917,10 @@ void Draw(UINT64 frameNo)
         dx.commandList->SetDescriptorHeaps(UINT(heaps.size()), heaps.data());
         dx.commandList->SetComputeRootSignature(dxr.globalSignature.Get());
         dx.commandList->SetComputeRootDescriptorTable(0, CD3DX12_GPU_DESCRIPTOR_HANDLE(dxr.srvUavHeap->GetGPUDescriptorHandleForHeapStart(), 0, dx.cbvSrvUavDescSize));
-        //dx.commandList->SetComputeRootShaderResourceView(1, );
 
-        // On the last frame, the ray-tracing output was used as a copy source, to
-        // copy its contents into the render target. Now we need to transition it to
-        // a UAV so that the shaders can write in it.
+        // On the last frame, the ray-tracing output was used as a copy source
+        // to copy its contents into the render target.
+        // Now we need to transition it to a UAV so that the shaders can write in it.
         auto transition = CD3DX12_RESOURCE_BARRIER::Transition(
             dxr.outputResource.Get(),
             D3D12_RESOURCE_STATE_COPY_SOURCE,
