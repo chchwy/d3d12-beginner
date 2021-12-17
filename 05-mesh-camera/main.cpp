@@ -7,9 +7,7 @@
 #pragma comment(lib, "dxgi.lib")
 
 using Microsoft::WRL::ComPtr;
-using DirectX::XMFLOAT3;
-using DirectX::XMFLOAT4;
-using DirectX::XMFLOAT4X4;
+using namespace DirectX;
 
 const static UINT CLIENT_WIDTH = 1024;
 const static UINT CLIENT_HEIGHT = 768;
@@ -70,6 +68,7 @@ struct Geometry
     UINT vertexStride = 0;
     UINT vertexBufferSize = 0;
     UINT indexBufferSize = 0;
+    UINT indexCount = 0;
 
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView()
     {
@@ -91,7 +90,7 @@ struct Geometry
 };
 
 DX12 dx;
-Geometry triangle;
+Geometry box;
 GameTimer timer;
 
 UINT currentFence = 0;
@@ -309,44 +308,81 @@ void InitD12(HWND hwnd)
 void InitGeometry()
 {
     // Create the vertex buffer
-    // Define the geometry for a triangle.
-    Vertex triangleVertices[] =
+    // Define the geometry for a box
+    Vertex vertices[8] =
     {
-        { { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
-        { { 0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
-        { { -0.5f, -0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+        {{ -1, -1, -1 }, { XMFLOAT4(Colors::White) }},
+        {{ -1, +1, -1 }, { XMFLOAT4(Colors::Black) }},
+        {{ +1, +1, -1 }, { XMFLOAT4(Colors::Red) }},
+        {{ +1, -1, -1 }, { XMFLOAT4(Colors::Green) }},
+        {{ -1, -1, +1 }, { XMFLOAT4(Colors::Blue) }},
+        {{ -1, +1, +1 }, { XMFLOAT4(Colors::Yellow) }},
+        {{ +1, +1, +1 }, { XMFLOAT4(Colors::Cyan) }},
+        {{ +1, -1, +1 }, { XMFLOAT4(Colors::Magenta) }},
     };
 
-    UINT16 indexes[] = { 0, 1, 2 };
+    constexpr UINT numIndex = 6 * 6; // 6 vertices per face
+    UINT16 indexes[numIndex] =
+    {
+        0, 1, 2, 0, 2, 3, // front face
+        4, 6, 5, 4, 7, 6, // back face
+        4, 5, 1, 4, 1, 0, // left face
+        3, 2, 6, 3, 6, 7, // right face
+        1, 5, 6, 1, 6, 2, // top face
+        4, 0, 3, 4, 3, 7, // bottom face
+    };
 
-    triangle.name = "Triangle";
-    triangle.vertexBufferSize = sizeof(triangleVertices);
-    triangle.indexBufferSize = sizeof(indexes);
-    triangle.vertexStride = sizeof(Vertex);
+    box.name = "Box";
+    box.vertexBufferSize = sizeof(vertices);
+    box.indexBufferSize = sizeof(indexes);
+    box.vertexStride = sizeof(Vertex);
+    box.indexCount = ARRAYSIZE(indexes);
 
     // Note: using upload heaps to transfer static data like vertex buffers is not recommended.
     // Every time the GPU needs it, the upload heap will be marshalled over.
     // Please read up on Default Heap usage.
     // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
     CD3DX12_HEAP_PROPERTIES healProperties(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(triangle.vertexBufferSize);
+
+
+    // Vertex Buffer
+    CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(box.vertexBufferSize);
 
     HR(dx.device->CreateCommittedResource(
         &healProperties,
         D3D12_HEAP_FLAG_NONE,
         &bufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, // init state
-        nullptr, // init value
-        IID_PPV_ARGS(&triangle.vertexBuffer)));
+        D3D12_RESOURCE_STATE_GENERIC_READ, // initial state
+        nullptr, // initial value
+        IID_PPV_ARGS(&box.vertexBuffer)));
 
-    // Copy the triangle data to the vertex buffer.
+    // Copy the data to the vertex buffer.
     BYTE* data = 0;
     CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU.
-    HR(triangle.vertexBuffer->Map(0, &readRange, (void**)&data));
+    HR(box.vertexBuffer->Map(0, &readRange, (void**)&data));
     {
-        memcpy(data, triangleVertices, triangle.vertexBufferSize);
+        memcpy(data, vertices, box.vertexBufferSize);
     }
-    triangle.vertexBuffer->Unmap(0, nullptr);
+    box.vertexBuffer->Unmap(0, nullptr);
+
+    // Index Buffer
+    bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(box.indexBufferSize);
+    HR(dx.device->CreateCommittedResource(
+        &healProperties,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, // initial state
+        nullptr, // initial value
+        IID_PPV_ARGS(&box.indexBuffer)));
+
+    // Copy the data to the index buffer.
+    BYTE* data2 = 0;
+    CD3DX12_RANGE readRange2(0, 0); // We do not intend to read from this resource on the CPU.
+    HR(box.indexBuffer->Map(0, &readRange2, (void**)&data2));
+    {
+        memcpy(data2, indexes, box.indexBufferSize);
+    }
+    box.indexBuffer->Unmap(0, nullptr);
 }
 
 void InitConstantBuffer()
@@ -484,8 +520,9 @@ void Render()
 
     // Draw the triangle
     dx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx.commandList->IASetVertexBuffers(0, 1, &triangle.vertexBufferView());
-    dx.commandList->DrawInstanced(3, 1, 0, 0);
+    dx.commandList->IASetVertexBuffers(0, 1, &box.vertexBufferView());
+    dx.commandList->IASetIndexBuffer(&box.indexBufferView());
+    dx.commandList->DrawIndexedInstanced(box.indexCount, 1, 0, 0, 0);
 
     // Indicate a state transition on the resource usage.
     dx.commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));

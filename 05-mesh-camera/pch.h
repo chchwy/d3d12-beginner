@@ -7,6 +7,7 @@
 #include <d3d12.h>
 #include <D3Dcompiler.h>
 #include <DirectXMath.h>
+#include <DirectXColors.h>
 
 #include <iostream>
 #include <functional>
