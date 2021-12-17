@@ -1,10 +1,9 @@
 
-/*
+
 cbuffer cb : register(b0)
 {
 	float4x4 rotation;
 }
-*/
 
 struct Interpolator
 {
@@ -21,7 +20,7 @@ Interpolator VSMain(float3 position : POSITION, float4 color : COLOR)
 {
 	Interpolator o;
 
-	o.position = float4(position, 1); //mul(float4(position, 1), rotation);
+	o.position = mul(float4(position, 1), rotation);
 	o.color = color;
 
 	return o;

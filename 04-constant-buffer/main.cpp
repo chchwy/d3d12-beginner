@@ -337,7 +337,7 @@ void InitConstantBuffer()
         IID_PPV_ARGS(&dx.constantBuffer));
 
     ConstantBuffer cb;
-    XMStoreFloat4x4(&cb.rotationMatrix, DirectX::XMMatrixRotationZ(0));
+    XMStoreFloat4x4(&cb.rotationMatrix, DirectX::XMMatrixIdentity());
 
     BYTE* data = nullptr;
     dx.constantBuffer->Map(0, nullptr, (void**)&data);
@@ -350,11 +350,35 @@ void InitConstantBuffer()
     dx.device->CreateConstantBufferView(&d2, ConstantBufferView());
 }
 
+void UpdateConstantBuffer(int frameNo)
+{
+    float angle = DirectX::XMConvertToRadians(frameNo % 360);
+    ConstantBuffer cb;
+    XMStoreFloat4x4(&cb.rotationMatrix, DirectX::XMMatrixRotationZ(angle));
+
+    BYTE* data = nullptr;
+    dx.constantBuffer->Map(0, nullptr, (void**)&data);
+    memcpy(data, &cb, sizeof(cb));
+    dx.constantBuffer->Unmap(0, nullptr);
+}
+
 void InitPipeline()
 {
-    // Create an empty root signature.
+    // Create a root signature.
+    D3D12_DESCRIPTOR_RANGE range;
+    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    range.NumDescriptors = 1;
+    range.BaseShaderRegister = 0;
+    range.RegisterSpace = 0;
+    range.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER rootParameters[1];
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
+    rootParameters[0].DescriptorTable.pDescriptorRanges = &range;
     CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-    rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    rootSignatureDesc.Init(1, rootParameters, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> signature;
     ComPtr<ID3DBlob> error;
@@ -419,6 +443,10 @@ void Render()
 
     // This needs to be reset whenever the command list is reset.
     dx.commandList->SetGraphicsRootSignature(dx.rootSignature.Get());
+
+    ID3D12DescriptorHeap* heaps[] { dx.cbvHeap.Get() };
+    dx.commandList->SetDescriptorHeaps(1, heaps);
+    dx.commandList->SetGraphicsRootDescriptorTable(0, dx.cbvHeap->GetGPUDescriptorHandleForHeapStart());
     dx.commandList->RSSetViewports(1, &dx.viewport);
     dx.commandList->RSSetScissorRects(1, &dx.scissorRect);
 
@@ -562,6 +590,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     InitPipeline();
 
     timer.Reset();
+    int frame = 0;
 
     bool isRunning = true;
     while (isRunning)
@@ -581,7 +610,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         timer.Tick();
         CalculateFrameStats(timer, hwnd);
 
+        UpdateConstantBuffer(frame);
         Render();
+
+        ++frame;
     }
 
     return 0;
