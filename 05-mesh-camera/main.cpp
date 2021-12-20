@@ -26,7 +26,7 @@ struct Vertex
 
 struct ConstantBuffer
 {
-    XMFLOAT4X4 rotationMatrix;
+    XMFLOAT4X4 worldViewProj;
 };
 
 struct DX12
@@ -89,9 +89,23 @@ struct Geometry
     }
 };
 
+struct Camera
+{
+    POINT lastMousePosition;
+
+    float theta = 1.5f * XM_PI;
+    float phi = XM_PIDIV4;
+    float radius = 5.0f;
+
+    XMFLOAT4X4 world;
+    XMFLOAT4X4 view;
+    XMFLOAT4X4 proj;
+};
+
 DX12 dx;
 Geometry box;
 GameTimer timer;
+Camera camera;
 
 UINT currentFence = 0;
 UINT currBackBufferIndex = 0;
@@ -307,8 +321,8 @@ void InitD12(HWND hwnd)
 
 void InitGeometry()
 {
-    // Create the vertex buffer
     // Define the geometry for a box
+    // Vertex buffer
     Vertex vertices[8] =
     {
         {{ -1, -1, -1 }, { XMFLOAT4(Colors::White) }},
@@ -321,6 +335,7 @@ void InitGeometry()
         {{ +1, -1, +1 }, { XMFLOAT4(Colors::Magenta) }},
     };
 
+    // Index Buffer
     constexpr UINT numIndex = 6 * 6; // 6 vertices per face
     UINT16 indexes[numIndex] =
     {
@@ -343,7 +358,6 @@ void InitGeometry()
     // Please read up on Default Heap usage.
     // An upload heap is used here for code simplicity and because there are very few vertices to actually transfer.
     CD3DX12_HEAP_PROPERTIES healProperties(D3D12_HEAP_TYPE_UPLOAD);
-
 
     // Vertex Buffer
     CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(box.vertexBufferSize);
@@ -395,7 +409,7 @@ void InitConstantBuffer()
         IID_PPV_ARGS(&dx.constantBuffer));
 
     ConstantBuffer cb;
-    XMStoreFloat4x4(&cb.rotationMatrix, DirectX::XMMatrixIdentity());
+    XMStoreFloat4x4(&cb.worldViewProj, DirectX::XMMatrixIdentity());
 
     BYTE* data = nullptr;
     dx.constantBuffer->Map(0, nullptr, (void**)&data);
@@ -408,11 +422,37 @@ void InitConstantBuffer()
     dx.device->CreateConstantBufferView(&d2, ConstantBufferView());
 }
 
-void UpdateConstantBuffer(int frameNo)
+void InitCamera()
 {
-    float angle = DirectX::XMConvertToRadians(frameNo % 360);
+    XMStoreFloat4x4(&camera.world, XMMatrixIdentity());
+    XMStoreFloat4x4(&camera.view, XMMatrixIdentity());
+
+    const float aspectRatio = float(CLIENT_WIDTH) / float(CLIENT_HEIGHT);
+    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * XM_PI, aspectRatio, 1.0f, 1000.0f);
+    XMStoreFloat4x4(&camera.proj, P);
+}
+
+void UpdateCamera(int frameNo)
+{
+    // Convert Spherical to Cartesian coordinates.
+    const float x = camera.radius * sinf(camera.phi) * cosf(camera.theta);
+    const float z = camera.radius * sinf(camera.phi) * sinf(camera.theta);
+    const float y = camera.radius * cosf(camera.phi);
+
+    // Build the view matrix.
+    XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
+    XMVECTOR target = XMVectorZero();
+    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
+    XMStoreFloat4x4(&camera.view, view);
+
+    XMMATRIX world = XMLoadFloat4x4(&camera.world);
+    XMMATRIX proj = XMLoadFloat4x4(&camera.proj);
+    XMMATRIX worldViewProj = world * view * proj;
+
     ConstantBuffer cb;
-    XMStoreFloat4x4(&cb.rotationMatrix, DirectX::XMMatrixRotationZ(angle));
+    XMStoreFloat4x4(&cb.worldViewProj, XMMatrixTranspose(worldViewProj));
 
     BYTE* data = nullptr;
     dx.constantBuffer->Map(0, nullptr, (void**)&data);
@@ -542,6 +582,53 @@ void Render()
     FlushCommandQueue();
 }
 
+float Clamp(const float x, const float low, const float high)
+{
+    return x < low ? low : (x > high ? high : x);
+}
+
+void OnMouseDown(WPARAM btnState, int x, int y)
+{
+    camera.lastMousePosition.x = x;
+    camera.lastMousePosition.y = y;
+}
+
+void OnMouseUp(WPARAM btnState, int x, int y)
+{
+}
+
+void OnMouseMove(WPARAM btnState, int x, int y)
+{
+    if ((btnState & MK_LBUTTON) != 0)
+    {
+        // Make each pixel correspond to a quarter of a degree.
+        float dx = XMConvertToRadians(0.25f * float(x - camera.lastMousePosition.x));
+        float dy = XMConvertToRadians(0.25f * float(y - camera.lastMousePosition.y));
+
+        // Update angles based on input to orbit camera around box.
+        camera.theta -= dx;
+        camera.phi -= dy;
+
+        // Restrict the angle mPhi.
+        camera.phi = Clamp(camera.phi, 0.1f, XM_PI - 0.1f);
+    }
+    else if ((btnState & MK_RBUTTON) != 0)
+    {
+        // Make each pixel correspond to 0.005 unit in the scene.
+        float dx = 0.005f * float(x - camera.lastMousePosition.x);
+        float dy = 0.005f * float(y - camera.lastMousePosition.y);
+
+        // Update the camera radius based on input.
+        camera.radius += dx - dy;
+
+        // Restrict the radius.
+        camera.radius = Clamp(camera.radius, 3.0f, 15.0f);
+    }
+
+    camera.lastMousePosition.x = x;
+    camera.lastMousePosition.y = y;
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     LRESULT result = 0;
@@ -557,6 +644,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
         PostQuitMessage(0);
         break;
     }
+    case WM_LBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        OnMouseDown(wparam, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        break;
+    case WM_LBUTTONUP:
+    case WM_MBUTTONUP:
+    case WM_RBUTTONUP:
+        OnMouseUp(wparam, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        break;
+    case WM_MOUSEMOVE:
+        OnMouseMove(wparam, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        break;
     default:
         result = DefWindowProcW(hwnd, msg, wparam, lparam);
     }
@@ -636,6 +736,11 @@ void CalculateFrameStats(GameTimer& timer, HWND hwnd)
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
+#ifdef _DEBUG
+    // Enable runtime memory check for debug builds
+    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+#endif
+
     // Open a window
     int errorCode = 0;
     HWND hwnd = CreateMainWindow(hInstance, &errorCode);
@@ -647,6 +752,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
     InitGeometry();
     InitConstantBuffer();
     InitPipeline();
+    InitCamera();
 
     timer.Reset();
     int frame = 0;
@@ -669,7 +775,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
         timer.Tick();
         CalculateFrameStats(timer, hwnd);
 
-        UpdateConstantBuffer(frame);
+        UpdateCamera(frame);
         Render();
 
         ++frame;

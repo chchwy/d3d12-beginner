@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <windowsx.h>
 #include <wrl.h>
 #include <dxgi1_4.h>
 #include <d3d12.h>
