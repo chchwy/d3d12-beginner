@@ -9,10 +9,10 @@
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
-const static UINT CLIENT_WIDTH = 1024;
-const static UINT CLIENT_HEIGHT = 768;
-const static DXGI_FORMAT BACK_BUFFER_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
-const static UINT NUM_BACK_BUFFER = 2;
+constexpr UINT CLIENT_WIDTH = 1024;
+constexpr UINT CLIENT_HEIGHT = 768;
+constexpr DXGI_FORMAT BACK_BUFFER_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr UINT NUM_BACK_BUFFER = 2;
 
 #define WINDOW_TITLE L"05. Camera & Mesh"
 #define ENABLE_DEBUG_LAYER true
@@ -121,7 +121,7 @@ void FlushCommandQueue()
 
     if (dx.fence->GetCompletedValue() < currentFence)
     {
-        HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
+        HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
         dx.fence->SetEventOnCompletion(currentFence, eventHandle);
 

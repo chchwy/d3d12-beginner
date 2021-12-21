@@ -135,7 +135,7 @@ void FlushCommandQueue()
 
     if (dx.mainFence->GetCompletedValue() < currentFenceValue)
     {
-        HANDLE eventHandle = CreateEventEx(nullptr, false, false, EVENT_ALL_ACCESS);
+        HANDLE eventHandle = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
         dx.mainFence->SetEventOnCompletion(currentFenceValue, eventHandle);
 
